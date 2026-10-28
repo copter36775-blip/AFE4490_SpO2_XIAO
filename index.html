@@ -1,0 +1,3343 @@
+<!doctype html>
+<!--
+  AFE4490 Studio V1.0.0 — "Clinical Instrument Dark / Oximetry"
+  Pairs with src/main.cpp V1.0.0 (link protocol A1) over Web Serial.
+
+  Single file. No build step, no external JS, no CDN.
+  Open in Chrome or Edge (Web Serial is not available in Firefox/Safari).
+
+  Sibling of HECG01's console: same chassis, different signal identity —
+  RED and IR carry the two emitter colours, mint is the derived PPG.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AFE4490 Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ==================================================================
+   DESIGN TOKENS
+   Near-black chassis, hairline separators, one accent. Colour is spent
+   almost entirely on the two emitters and on alarm states.
+   ================================================================== */
+:root{
+  --void:#03050a; --chassis:#070a10; --panel:#0b0f16;
+  --panel-2:#0f141d; --panel-3:#141b25;
+  --hair:rgba(146,176,210,.10); --hair-2:rgba(146,176,210,.19); --hair-3:rgba(146,176,210,.30);
+  --ink:#e9f1f9; --ink-2:#9fb3c8; --ink-3:#6b7f94; --ink-4:#465768;
+
+  --accent:#3fe0b0; --accent-dim:rgba(63,224,176,.12);
+
+  /* signal identity ------------------------------------------------ */
+  --led2:#ff5f6d;        /* LED2 = RED emitter            */
+  --led2-soft:#ff9aa3;
+  --led1:#b98cff;        /* LED1 = IR emitter (invisible) */
+  --led1-soft:#d4bcff;
+  --amb:#7a8ea6;         /* ambient / dark level          */
+  --ppg:#3fe0b0;         /* ambient-subtracted PPG        */
+
+  --ok:#3ddc97; --warn:#f5b544; --bad:#ff6b7d; --violet:#a78bfa;
+
+  --r-xs:4px; --r-sm:6px; --r-md:9px; --r-lg:13px;
+  --ease:cubic-bezier(.2,.75,.25,1);
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"Cascadia Mono",Menlo,Consolas,monospace;
+  --sans:"Inter",-apple-system,"Segoe UI",Roboto,system-ui,sans-serif;
+  --topbar-h:48px; --statusbar-h:30px; --rail-w:452px;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:rgba(146,176,210,.16);border-radius:99px;border:2px solid transparent;background-clip:padding-box}
+*::-webkit-scrollbar-thumb:hover{background:rgba(146,176,210,.34);background-clip:padding-box}
+html,body{height:100%}
+body{
+  margin:0;font-family:var(--sans);color:var(--ink);font-size:13px;background:var(--chassis);
+  background-image:radial-gradient(1400px 620px at 50% -14%,rgba(20,70,62,.30),transparent 70%);
+  display:grid;grid-template-rows:var(--topbar-h) minmax(0,1fr) var(--statusbar-h);overflow:hidden;
+}
+button,input,select{font-family:inherit;color:inherit}
+:focus-visible{outline:1.5px solid var(--accent);outline-offset:2px;border-radius:var(--r-xs)}
+.mono{font-family:var(--mono)}
+.tabnum{font-variant-numeric:tabular-nums}
+
+/* ---- top bar ---------------------------------------------------- */
+.topbar{
+  display:flex;align-items:center;gap:14px;padding:0 14px;
+  background:linear-gradient(180deg,var(--panel-2),var(--panel));
+  border-bottom:1px solid var(--hair-2);
+}
+.brand{display:flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.6px;font-size:13px}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--ink-4);box-shadow:0 0 0 3px rgba(255,255,255,.03)}
+.brand .dot.live{background:var(--accent);box-shadow:0 0 12px var(--accent),0 0 0 3px var(--accent-dim);animation:pulse 2s var(--ease) infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.brand small{font-weight:500;color:var(--ink-3);letter-spacing:.4px;font-size:10px}
+.spacer{flex:1}
+.pill{
+  display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:99px;
+  background:var(--panel-2);border:1px solid var(--hair);color:var(--ink-2);
+  font-family:var(--mono);font-size:10.5px;font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.pill b{color:var(--ink);font-weight:600}
+.pill.good{border-color:rgba(61,220,151,.35);color:var(--ok)}
+.pill.bad{border-color:rgba(255,107,125,.35);color:var(--bad)}
+.pill.warn{border-color:rgba(245,181,68,.35);color:var(--warn)}
+.btn{
+  display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:var(--r-sm);
+  background:var(--panel-2);border:1px solid var(--hair-2);color:var(--ink);
+  font-size:12px;font-weight:600;cursor:pointer;transition:.14s var(--ease);white-space:nowrap;
+}
+.btn:hover:not(:disabled){background:var(--panel-3);border-color:var(--hair-3)}
+.btn:disabled{opacity:.38;cursor:not-allowed}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#04211a}
+.btn.primary:hover:not(:disabled){filter:brightness(1.1);background:var(--accent)}
+.btn.danger{border-color:rgba(255,107,125,.4);color:var(--bad)}
+.btn.stop{background:var(--bad);border-color:var(--bad);color:#2c040c}
+.btn.stop:hover:not(:disabled){filter:brightness(1.08);background:var(--bad)}
+.btn.sm{padding:4px 9px;font-size:11px}
+
+/* ---- layout ----------------------------------------------------- */
+.main{display:grid;grid-template-columns:minmax(0,1fr) var(--rail-w);min-height:0}
+.plotcol{display:flex;flex-direction:column;min-height:0;min-width:0}
+.plotcol > .plots{flex:1}
+.plotcol > .capview{flex:1;min-height:0}
+/* A flex stack rather than fixed grid rows, so hiding a chart simply
+   gives its space back instead of leaving a hole. */
+.plots{display:flex;flex-direction:column;gap:9px;padding:11px;min-height:0;overflow:auto}
+.plots > .vitals{flex:0 0 auto}
+.plots > .card{flex:1 1 0;min-height:118px}
+.gridN{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(226px,1fr));
+  gap:9px;flex:1 1 0;min-height:130px;
+}
+.gridN > .card{min-height:0}
+.card.off,.gridN.off{display:none}
+.chip{
+  padding:4px 10px;border-radius:99px;border:1px solid var(--hair-2);
+  background:var(--panel-2);color:var(--ink-3);font-size:11px;font-weight:600;
+  cursor:pointer;transition:.14s var(--ease);
+}
+.chip:hover{background:var(--panel-3);color:var(--ink-2)}
+.chip.on{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
+
+/* ---- view switch (monitor / capture) ---------------------------- */
+.viewsw{display:flex;border:1px solid var(--hair-2);border-radius:7px;overflow:hidden;background:var(--panel-2)}
+.viewsw button{
+  border:0;background:transparent;color:var(--ink-3);font:600 11px/1 var(--ui);
+  padding:6px 13px;cursor:pointer;letter-spacing:.4px;transition:.14s var(--ease);
+}
+.viewsw button:hover{color:var(--ink-2)}
+.viewsw button.on{background:var(--accent-dim);color:var(--accent)}
+
+/* ---- capture view ----------------------------------------------- */
+.capview{display:none;flex-direction:column;min-height:0;padding:11px;gap:9px}
+body.capture .plots{display:none}
+body.capture .capview{display:flex}
+.capbar{
+  display:flex;align-items:center;gap:12px;padding:8px 11px;
+  border:1px solid var(--hair-2);border-radius:9px;background:var(--panel);flex:0 0 auto;
+}
+.capbar .caplbl{font-size:9.5px;font-weight:700;letter-spacing:1.1px;color:var(--ink-3)}
+.capbar .capstat{
+  font-family:var(--mono);font-size:11px;color:var(--ink-2);
+  padding:2px 8px;border-radius:99px;background:var(--panel-3);
+}
+.capbar .capstat.rec{color:var(--bad);background:rgba(255,107,125,.12)}
+.capbar .capstat.done{color:var(--accent);background:var(--accent-dim)}
+.capprog{width:150px;height:4px;border-radius:99px;background:var(--panel-3);overflow:hidden}
+.capprog i{display:block;height:100%;width:0;background:var(--accent);transition:width .12s linear}
+.capmeta{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+/* minmax(0,1fr) rather than 1fr: a plain 1fr row is floored at its
+   content's min-content height, which lets four stacked cards overflow
+   the grid instead of sharing it. */
+.capgrid{display:grid;gap:9px;flex:1 1 0;min-height:0}
+.capgrid.n1{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr)}
+.capgrid.n2{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(0,1fr))}
+.capgrid.n4{grid-template-columns:1fr;grid-template-rows:repeat(4,minmax(0,1fr))}
+.capgrid.n6{grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(3,minmax(0,1fr))}
+.capgrid .card{min-height:0;overflow:hidden}
+.capgrid .well{min-height:44px}
+.capsel{
+  width:auto;flex:0 0 auto;max-width:230px;
+  background:var(--panel-2);border:1px solid var(--hair-2);border-radius:6px;
+  color:var(--ink-2);font:600 10.5px/1 var(--ui);padding:4px 7px;cursor:pointer;
+}
+.capsel:focus{outline:0;border-color:var(--accent)}
+.capstats{
+  display:flex;gap:14px;flex-wrap:wrap;padding:5px 11px;border-top:1px solid var(--hair);
+  font-family:var(--mono);font-size:10px;color:var(--ink-3);font-variant-numeric:tabular-nums;
+}
+.capstats b{color:var(--ink);font-weight:600}
+.rail{
+  border-left:1px solid var(--hair-2);background:var(--panel);
+  display:flex;flex-direction:column;min-height:0;
+}
+
+/* ---- chart cards ------------------------------------------------ */
+.card{
+  background:var(--panel);border:1px solid var(--hair);border-radius:var(--r-md);
+  overflow:hidden;display:flex;flex-direction:column;position:relative;
+}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--spine,var(--hair-3))}
+.card-hd{
+  display:flex;align-items:center;gap:10px;padding:7px 11px 7px 13px;
+  border-bottom:1px solid var(--hair);background:var(--panel-2);
+}
+.card-hd h3{
+  margin:0;font-size:10.5px;font-weight:700;letter-spacing:.9px;text-transform:uppercase;color:var(--ink-2);
+}
+.card-hd .readout{margin-left:auto;display:flex;gap:12px;font-family:var(--mono);font-size:10.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.card-hd .readout b{color:var(--ink);font-weight:600}
+.well{background:var(--void);position:relative;flex:1;min-height:0}
+.well canvas{display:block;position:absolute;inset:0;width:100%;height:100%}
+.well.fixed{flex:none}
+.well.fixed canvas{position:relative;inset:auto}
+.legend{display:flex;gap:11px;align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--ink-3);font-weight:600;letter-spacing:.3px}
+.legend i{width:11px;height:2.5px;border-radius:2px;background:currentColor}
+
+/* ---- render telemetry ------------------------------------------- */
+#sbSpark{display:block;width:60px;height:12px;opacity:.85}
+.statusbar b.good{color:var(--ok)}
+.statusbar b.warn{color:var(--warn)}
+.statusbar b.bad{color:var(--bad)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:9px;min-height:0}
+.grid2 > .card{min-height:0}
+
+/* ---- vitals ----------------------------------------------------- */
+/* Link-health banner. A dead SPI bus used to show up only as an empty
+   grid and a silent log, which is the least useful thing a console can do. */
+.banner{
+  display:none;align-items:center;gap:12px;margin:11px 11px 0;padding:10px 13px;
+  border-radius:var(--r-md);border:1px solid rgba(255,107,125,.42);
+  background:linear-gradient(180deg,rgba(255,107,125,.13),rgba(255,107,125,.06));
+}
+.banner.on{display:flex}
+.banner.info{border-color:rgba(245,181,68,.42);
+  background:linear-gradient(180deg,rgba(245,181,68,.13),rgba(245,181,68,.06))}
+.banner .bi{font-size:17px;line-height:1}
+.banner .bt{flex:1;min-width:0}
+.banner .bt b{display:block;font-size:12.5px;font-weight:700;margin-bottom:2px}
+.banner .bt span{font-size:11px;color:var(--ink-2);line-height:1.5}
+
+.vitals{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+.vital{
+  background:var(--panel);border:1px solid var(--hair);border-radius:var(--r-md);
+  padding:9px 12px;position:relative;overflow:hidden;
+}
+.vital::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--vc,var(--hair-3))}
+.vital .lbl{font-size:9.5px;font-weight:700;letter-spacing:.9px;text-transform:uppercase;color:var(--ink-3)}
+.vital .num{font-family:var(--mono);font-size:27px;font-weight:700;line-height:1.15;color:var(--vc,var(--ink));font-variant-numeric:tabular-nums}
+.vital .num small{font-size:12px;color:var(--ink-3);font-weight:500;margin-left:3px}
+.vital .sub{font-family:var(--mono);font-size:10px;color:var(--ink-4);font-variant-numeric:tabular-nums}
+.vital.stale .num{color:var(--ink-4)}
+
+/* ---- rail tabs -------------------------------------------------- */
+.tabs{display:flex;border-bottom:1px solid var(--hair-2);background:var(--panel-2);flex-shrink:0;overflow-x:auto}
+.tab{
+  flex:1;padding:9px 4px;background:none;border:0;border-bottom:2px solid transparent;
+  color:var(--ink-3);font-size:10.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;
+  cursor:pointer;transition:.14s var(--ease);white-space:nowrap;
+}
+.tab:hover{color:var(--ink-2);background:var(--panel-3)}
+.tab.on{color:var(--accent);border-bottom-color:var(--accent);background:var(--panel)}
+.panes{flex:1;overflow-y:auto;min-height:0}
+.pane{display:none;padding:13px}
+.pane.on{display:block}
+
+/* ---- controls --------------------------------------------------- */
+.sect{margin-bottom:16px}
+.sect > h4{
+  margin:0 0 9px;font-size:9.5px;font-weight:700;letter-spacing:1px;text-transform:uppercase;
+  color:var(--ink-4);display:flex;align-items:center;gap:8px;
+}
+.sect > h4::after{content:"";flex:1;height:1px;background:var(--hair)}
+.row{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.row label{flex:0 0 118px;font-size:11px;color:var(--ink-2);font-weight:500}
+.row .grow{flex:1;min-width:0}
+.hint{font-size:10.5px;color:var(--ink-4);line-height:1.5;margin:-3px 0 9px}
+.hint b{color:var(--ink-3);font-weight:600}
+input[type=number],input[type=text],select{
+  width:100%;padding:6px 8px;border-radius:var(--r-sm);background:var(--panel-2);
+  border:1px solid var(--hair-2);font-size:12px;font-family:var(--mono);font-variant-numeric:tabular-nums;
+}
+input[type=number]:focus,input[type=text]:focus,select:focus{border-color:var(--accent);outline:none}
+select{font-family:var(--sans);cursor:pointer}
+input[type=range]{width:100%;accent-color:var(--accent);cursor:pointer}
+.chk{display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:11.5px;color:var(--ink-2)}
+.chk input{accent-color:var(--accent);cursor:pointer;width:14px;height:14px}
+.btnrow{display:flex;gap:7px;flex-wrap:wrap}
+.val{font-family:var(--mono);font-size:11px;color:var(--accent);min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
+
+/* ---- register table --------------------------------------------- */
+.regscroll{max-height:44vh;overflow-y:auto;border:1px solid var(--hair);border-radius:var(--r-sm)}
+.regtbl{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px}
+.regtbl th{
+  position:sticky;top:0;background:var(--panel-2);text-align:left;padding:6px 7px;
+  font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--ink-4);
+  border-bottom:1px solid var(--hair-2);font-family:var(--sans);font-weight:700;z-index:2;
+}
+.regtbl td{padding:4px 7px;border-bottom:1px solid var(--hair);vertical-align:middle}
+.regtbl tr{cursor:pointer;transition:background .1s}
+.regtbl tr:hover td{background:var(--panel-2)}
+.regtbl tr.sel td{background:var(--accent-dim)}
+.regtbl .addr{color:var(--ink-3);width:34px}
+.regtbl .nm{color:var(--ink);font-family:var(--sans);font-size:11px;font-weight:500}
+.regtbl .hex{color:var(--accent);text-align:right;font-variant-numeric:tabular-nums}
+.regtbl .ro{color:var(--ink-4)}
+.regtbl .chg{color:var(--warn)}
+.fields{margin-top:11px;border-top:1px solid var(--hair-2);padding-top:11px}
+.fld{
+  display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;
+  padding:6px 0;border-bottom:1px solid var(--hair);
+}
+.fld:last-child{border-bottom:0}
+.fld .fn{font-family:var(--mono);font-size:11px;color:var(--ink)}
+.fld .fb{font-family:var(--mono);font-size:9.5px;color:var(--ink-4)}
+.fld .fd{font-size:10px;color:var(--ink-4);line-height:1.4;grid-column:1/-1;margin-top:-3px}
+.fld select,.fld input[type=number]{width:150px}
+
+/* ---- log -------------------------------------------------------- */
+.log{
+  font-family:var(--mono);font-size:10.5px;line-height:1.65;background:var(--void);
+  border:1px solid var(--hair);border-radius:var(--r-sm);padding:8px;height:270px;
+  overflow-y:auto;white-space:pre-wrap;word-break:break-all;
+}
+.log .tx{color:var(--accent)}
+.log .rx{color:var(--ink-2)}
+.log .er{color:var(--bad)}
+.log .ev{color:var(--violet)}
+
+/* ---- status bar ------------------------------------------------- */
+.statusbar{
+  display:flex;align-items:center;gap:13px;padding:0 13px;
+  background:var(--panel);border-top:1px solid var(--hair-2);
+  font-family:var(--mono);font-size:10.5px;color:var(--ink-4);font-variant-numeric:tabular-nums;
+}
+.statusbar b{color:var(--ink-2);font-weight:500}
+
+/* ---- overlay ---------------------------------------------------- */
+.overlay{
+  position:fixed;inset:0;background:rgba(3,5,10,.86);backdrop-filter:blur(7px);
+  display:flex;align-items:center;justify-content:center;z-index:50;
+}
+.overlay.hide{display:none}
+.wm{max-width:560px;padding:30px 34px;background:var(--panel);border:1px solid var(--hair-2);border-radius:var(--r-lg);text-align:center}
+.wm h1{margin:0 0 4px;font-size:20px;font-weight:800;letter-spacing:.4px}
+.wm p{color:var(--ink-3);line-height:1.65;font-size:12.5px;margin:0 0 16px}
+.wm .wire{
+  text-align:left;font-family:var(--mono);font-size:10.5px;color:var(--ink-3);
+  background:var(--void);border:1px solid var(--hair);border-radius:var(--r-sm);
+  padding:11px 13px;margin:0 0 18px;line-height:1.75;
+}
+.wm .wire b{color:var(--accent);font-weight:600}
+@media(max-width:1500px){ :root{--rail-w:404px} }
+@media(max-width:1240px){ .main{grid-template-columns:1fr} .rail{display:none} }
+</style>
+</head>
+<body>
+
+<!-- ================================================================= -->
+<div class="topbar">
+  <div class="brand"><span class="dot" id="liveDot"></span>
+    <span>AFE4490 STUDIO<br><small>PULSE OXIMETRY FRONT END · XIAO nRF52840</small></span>
+  </div>
+  <div class="spacer"></div>
+  <span class="pill" id="pillFw">FW <b>—</b></span>
+  <span class="pill" id="pillRate">PRF <b>—</b></span>
+  <span class="pill" id="pillLed">LED <b>—</b></span>
+  <span class="pill" id="pillDrop">DROP <b>0</b></span>
+  <div class="viewsw" id="viewSw">
+    <button class="on" data-v="monitor">Monitor</button>
+    <button data-v="capture">Capture</button>
+  </div>
+  <button class="btn" id="btnConnect">Connect</button>
+  <button class="btn primary" id="btnStream" disabled>Start</button>
+</div>
+
+<!-- ================================================================= -->
+<div class="main">
+  <div class="plotcol">
+  <div class="banner" id="banner">
+    <span class="bi" id="bannerIcon">&#9888;</span>
+    <span class="bt"><b id="bannerTitle"></b><span id="bannerText"></span></span>
+    <button class="btn sm" id="bannerAct"></button>
+  </div>
+  <div class="plots">
+    <div class="vitals">
+      <div class="vital" id="vSpo2" style="--vc:var(--led2)">
+        <div class="lbl">SpO₂</div><div class="num" id="numSpo2">—<small>%</small></div>
+        <div class="sub" id="subSpo2">R = —</div>
+      </div>
+      <div class="vital" id="vHr" style="--vc:var(--ppg)">
+        <div class="lbl">Pulse rate</div><div class="num" id="numHr">—<small>bpm</small></div>
+        <div class="sub" id="subHr">— s window</div>
+      </div>
+      <div class="vital" id="vPi" style="--vc:var(--led1)">
+        <div class="lbl">Perfusion index</div><div class="num" id="numPi">—<small>%</small></div>
+        <div class="sub" id="subPi">AC/DC on IR</div>
+      </div>
+      <div class="vital" id="vHead" style="--vc:var(--warn)">
+        <div class="lbl">ADC headroom</div><div class="num" id="numHead">—<small>%FS</small></div>
+        <div class="sub" id="subHead">target 40–60 %</div>
+      </div>
+    </div>
+
+    <article class="card" id="cardPleth" style="--spine:var(--ppg);flex:1.05 1 0">
+      <div class="card-hd">
+        <h3>Plethysmograph · ambient subtracted</h3>
+        <div class="legend">
+          <span style="color:var(--led2)"><i></i>LED2 − AMB (RED)</span>
+          <span style="color:var(--led1)"><i></i>LED1 − AMB (IR)</span>
+        </div>
+        <div class="readout"><span>RED <b id="roRed">—</b></span><span>IR <b id="roIr">—</b></span></div>
+      </div>
+      <div class="well"><canvas id="bPleth" height="210"></canvas><canvas id="cPleth" height="210"></canvas></div>
+    </article>
+
+    <article class="card" id="cardAc" style="--spine:var(--accent);flex:1.35 1 0">
+      <div class="card-hd">
+        <h3>Pulsatile (AC) · 0.5–5 Hz band</h3>
+        <div class="legend">
+          <span style="color:var(--led2)"><i></i>RED AC</span>
+          <span style="color:var(--led1)"><i></i>IR AC</span>
+        </div>
+        <div class="readout"><span>peak-peak IR <b id="roAc">—</b></span></div>
+      </div>
+      <div class="well"><canvas id="bAc" height="150"></canvas><canvas id="cAc" height="150"></canvas></div>
+    </article>
+
+    <div class="gridN" id="bottomRow">
+      <article class="card" id="cardRaw" style="--spine:var(--led2-soft)">
+        <div class="card-hd"><h3>Raw phases · LED on</h3>
+          <div class="legend">
+            <span style="color:var(--led2-soft)"><i></i>LED2</span>
+            <span style="color:var(--led1-soft)"><i></i>LED1</span>
+          </div>
+          <div class="readout"><span id="roRaw">—</span></div>
+        </div>
+        <div class="well"><canvas id="bRaw" height="150"></canvas><canvas id="cRaw" height="150"></canvas></div>
+      </article>
+      <article class="card off" id="cardAmb" style="--spine:var(--amb)">
+        <div class="card-hd"><h3>Ambient · LED off</h3>
+          <div class="legend">
+            <span style="color:var(--led2)"><i></i>ALED2</span>
+            <span style="color:var(--led1)"><i></i>ALED1</span>
+          </div>
+          <div class="readout"><span id="roAmb">—</span></div>
+        </div>
+        <div class="well"><canvas id="bAmb" height="150"></canvas><canvas id="cAmb" height="150"></canvas></div>
+      </article>
+      <article class="card" id="cardFft" style="--spine:var(--violet)">
+        <div class="card-hd"><h3>Spectrum · IR AC</h3>
+          <div class="readout"><span>peak <b id="roFft">—</b></span></div>
+        </div>
+        <div class="well"><canvas id="cFft" height="150"></canvas></div>
+      </article>
+    </div>
+  </div>
+
+  <!-- ---- capture view ------------------------------------------- -->
+  <div class="capview" id="capView">
+    <div class="capbar">
+      <span class="caplbl">CAPTURE</span>
+      <span class="capstat" id="capState">idle</span>
+      <div class="capprog"><i id="capProg"></i></div>
+      <span class="capmeta" id="capMeta">no record yet</span>
+      <div class="spacer"></div>
+      <div class="btnrow">
+        <button class="btn sm primary" id="capGo">Capture</button>
+        <button class="btn sm" id="capAbort" disabled>Abort</button>
+        <button class="btn sm" id="capCsv" disabled>CSV</button>
+        <button class="btn sm" id="capPng" disabled>PNG</button>
+      </div>
+    </div>
+    <div class="capgrid n4" id="capGrid"></div>
+  </div>
+  </div>
+
+  <!-- =============================================================== -->
+  <aside class="rail">
+    <div class="tabs">
+      <button class="tab on" data-p="acq">Acquire</button>
+      <button class="tab" data-p="tx">Tx / LED</button>
+      <button class="tab" data-p="rx">Rx / Gain</button>
+      <button class="tab" data-p="timing">Timing</button>
+      <button class="tab" data-p="regs">Registers</button>
+      <button class="tab" data-p="cap">Capture</button>
+      <button class="tab" data-p="diag">Diag</button>
+    </div>
+    <div class="panes">
+
+      <!-- ---- ACQUIRE -------------------------------------------- -->
+      <section class="pane on" data-p="acq">
+        <div class="sect"><h4>Pulse sequencing</h4>
+          <div class="row"><label>PRF</label>
+            <input type="number" id="inPrf" class="grow" min="62" max="1000" step="1" value="500">
+            <span class="val">Hz</span>
+          </div>
+          <div class="row"><label>Duty cycle</label>
+            <input type="range" id="inDuty" class="grow" min="1" max="25" step="1" value="25">
+            <span class="val" id="vDuty">25 %</span>
+          </div>
+          <div class="row"><label>Settle delay</label>
+            <input type="number" id="inSettle" class="grow" min="0" max="4000" step="10" value="50">
+            <span class="val" id="vSettle">12.5 µs</span>
+          </div>
+          <div class="row"><label>ADC reset</label>
+            <input type="number" id="inRst" class="grow" min="2" max="16" step="1" value="4">
+            <span class="val" id="vRst">1.0 µs</span>
+          </div>
+          <p class="hint">The four phases each occupy one quarter of the pulse-repetition
+            period. <b>Settle delay</b> skips the LED and cable rise before sampling starts;
+            a longer <b>ADC reset</b> (≈6 counts) suppresses LED-into-ambient crosstalk.</p>
+          <div class="btnrow"><button class="btn sm" id="btnApplyPrf">Apply timing</button></div>
+        </div>
+
+        <div class="sect"><h4>Averaging</h4>
+          <div class="row"><label>NUMAV</label>
+            <input type="number" id="inNumav" class="grow" min="0" max="15" step="1" value="8">
+            <span class="val" id="vNumav">9×</span>
+          </div>
+          <label class="chk"><input type="checkbox" id="ckNumavAuto" checked> Derive from PRF automatically</label>
+          <p class="hint">Each ADC conversion takes 50 µs and every average must fit inside
+            a quarter period, so the ceiling falls as PRF rises.</p>
+        </div>
+
+        <div class="sect"><h4>Link</h4>
+          <div class="row"><label>Stream format</label>
+            <select id="selFmt" class="grow"><option value="BIN">Binary (CRC framed)</option><option value="TEXT">CSV text</option></select>
+          </div>
+          <div class="row"><label>Decimation</label>
+            <input type="number" id="inDec" class="grow" min="1" max="64" step="1" value="1">
+            <span class="val" id="vDec">500 Hz</span>
+          </div>
+          <div class="row"><label>SPI clock</label>
+            <select id="selSpi" class="grow">
+              <option value="125000">125 kHz</option><option value="250000">250 kHz</option>
+              <option value="500000">500 kHz</option><option value="1000000">1 MHz</option>
+              <option value="2000000">2 MHz</option><option value="4000000" selected>4 MHz</option>
+              <option value="8000000">8 MHz</option>
+            </select>
+          </div>
+          <div class="row"><label>SCK / MOSI drive</label>
+            <select id="selDrive" class="grow">
+              <option value="0" selected>Standard (S0S1) — jumper wiring</option>
+              <option value="1">High (H0H1) — short PCB traces</option>
+            </select>
+          </div>
+          <p class="hint">Only those seven clocks exist on the nRF52 SPIM, and the
+            BSP rounds a request <b>up</b> to the next one — SPIM1 also caps at 8 MHz.
+            The BSP forces high drive on SCK/MOSI, which overshoots on dupont wire and
+            couples into MISO; <b>standard drive</b> is usually the bigger win.
+            Measure the ceiling with <b>Sweep SPI clock</b> in the Diag tab.</p>
+        </div>
+
+        <div class="sect"><h4>Display</h4>
+          <div class="btnrow" id="chartToggles" style="margin-bottom:9px"></div>
+          <div class="row"><label>Sweep window</label>
+            <select id="selSweep" class="grow">
+              <option value="2">2 s</option><option value="3">3 s</option>
+              <option value="5" selected>5 s</option><option value="8">8 s</option>
+              <option value="12">12 s</option><option value="20">20 s</option>
+            </select>
+          </div>
+          <div class="row"><label>Frame rate</label>
+            <select id="selFps" class="grow">
+              <option value="0" selected>Full — match the display</option>
+              <option value="60">Cap at 60 fps</option>
+              <option value="30">Cap at 30 fps</option>
+            </select>
+          </div>
+          <div class="row"><label>Trace quality</label>
+            <select id="selQuality" class="grow">
+              <option value="high" selected>High — layered glow</option>
+              <option value="balanced">Balanced</option>
+              <option value="raw">Raw — fastest</option>
+            </select>
+          </div>
+          <div class="row"><label>Channels</label>
+            <select id="selLanes" class="grow">
+              <option value="split" selected>Split — one axis each</option>
+              <option value="overlay">Overlaid — shared axis</option>
+            </select>
+          </div>
+          <p class="hint">Each trace gets its own auto-scaled lane by default. RED and IR sit
+            at very different DC levels, so a shared axis compresses the pulsatile part of both
+            into a flat line — that is why the raw plethysmograph looks featureless when they
+            are overlaid.</p>
+          <label class="chk"><input type="checkbox" id="ckInvert" checked>
+            Show the pleth the conventional way up</label>
+          <div class="btnrow" style="margin-top:8px">
+            <button class="btn sm" id="btnResetView">Reset view to defaults</button>
+          </div>
+          <p class="hint">The AFE's LED-minus-ambient registers come out
+            <b>inverted</b> compared with the waveforms in most publications
+            (datasheet notes on figures 128 and 129), and physically more blood
+            means more absorption and so less photocurrent. Both push systole
+            downward, so the display flips it back.</p>
+        </div>
+
+        <div class="sect"><h4>Presets</h4>
+          <div class="btnrow">
+            <button class="btn sm" id="btnDefaults">SpO₂ default</button>
+            <button class="btn sm" id="btnAgc">Auto gain</button>
+            <button class="btn sm" id="btnExportCsv">Export CSV</button>
+            <button class="btn sm danger" id="btnResetChip">Reset AFE</button>
+          </div>
+          <p class="hint"><b>SpO₂ default</b> rewrites the whole register map to the
+            normal pulse-oximetry configuration, and <b>Reset AFE</b> pulses the chip's
+            own reset first. Neither touches the display; <b>Reset view to defaults</b>
+            in the Display section above does that, and nothing else.
+            <b>Auto gain</b> walks LED current and transimpedance until the DC
+            level sits near half of full scale — the loop from datasheet figure 135.</p>
+        </div>
+      </section>
+
+      <!-- ---- CAPTURE -------------------------------------------- -->
+      <section class="pane" data-p="cap">
+        <div class="sect"><h4>Record</h4>
+          <div class="row"><label>Source</label>
+            <select id="capMode" class="grow">
+              <option value="record" selected>Record forward from Capture</option>
+              <option value="snapshot">Snapshot the window already on screen</option>
+            </select>
+          </div>
+          <div class="row"><label>Samples</label>
+            <select id="capN" class="grow">
+              <option>512</option><option>1024</option>
+              <option selected>2048</option><option>4096</option>
+              <option>8192</option><option>16384</option><option>32768</option>
+            </select>
+            <span class="val" id="capSecs">4.1 s</span>
+          </div>
+          <div class="btnrow">
+            <button class="btn sm primary grow" id="capGo2">Capture</button>
+          </div>
+          <p class="hint"><b>Record</b> arms the acquisition and collects the next N samples,
+            the way the EVM's finite capture works. <b>Snapshot</b> takes the last N samples
+            already in the ring, so it is instant but limited to the 4096-sample history.
+            Live monitoring keeps running either way.</p>
+        </div>
+
+        <div class="sect"><h4>Analysis</h4>
+          <div class="row"><label>Plots</label>
+            <select id="capLayout" class="grow">
+              <option value="1">Single</option>
+              <option value="2">Two</option>
+              <option value="4" selected>Four (EVM layout)</option>
+              <option value="6">Six</option>
+            </select>
+          </div>
+          <div class="row"><label>Units</label>
+            <select id="capUnits" class="grow">
+              <option value="v" selected>Volts</option>
+              <option value="code">ADC codes</option>
+              <option value="ua">Input current (µA)</option>
+            </select>
+          </div>
+          <div class="row"><label>Detrend</label>
+            <select id="capDetrend" class="grow">
+              <option value="none" selected>None</option>
+              <option value="mean">Remove mean</option>
+              <option value="band">0.5–5 Hz band</option>
+            </select>
+          </div>
+          <div class="row"><label>Window</label>
+            <select id="capWin" class="grow">
+              <option value="hann" selected>Hann</option>
+              <option value="blackman">Blackman–Harris</option>
+              <option value="rect">Rectangular</option>
+            </select>
+          </div>
+          <p class="hint">The window only affects the spectrum. <b>Blackman–Harris</b> has the
+            lowest sidelobes, which is what you want when reading SNR off a single tone;
+            <b>Hann</b> keeps more frequency resolution.</p>
+        </div>
+
+        <div class="sect"><h4>Statistics</h4>
+          <div id="capTable" class="mono" style="font-size:10.5px;color:var(--ink-3)">
+            Nothing captured yet.
+          </div>
+        </div>
+      </section>
+
+      <!-- ---- TX ------------------------------------------------- -->
+      <section class="pane" data-p="tx">
+        <div class="sect"><h4>Emitter drive</h4>
+          <div class="row"><label>LED1 · IR</label>
+            <input type="range" id="inLed1" class="grow" min="0" max="255" step="1" value="40">
+            <span class="val" id="vLed1">—</span>
+          </div>
+          <div class="row"><label>LED2 · RED</label>
+            <input type="range" id="inLed2" class="grow" min="0" max="255" step="1" value="40">
+            <span class="val" id="vLed2">—</span>
+          </div>
+          <div class="row"><label>Current range</label>
+            <select id="selRange" class="grow"></select>
+          </div>
+          <div class="row"><label>TX_REF</label>
+            <select id="selTxref" class="grow">
+              <option value="0">0.75 V — 5 V Tx rail</option>
+              <option value="1" selected>0.50 V — 3.0–3.6 V Tx rail</option>
+              <option value="2">1.00 V — 5 V Tx rail, 200 mA</option>
+            </select>
+          </div>
+          <div class="row"><label>Driver topology</label>
+            <select id="selBridge" class="grow">
+              <option value="0" selected>H-bridge — 2-pin back-to-back LEDs</option>
+              <option value="1">Push-pull — 3-pin common anode</option>
+            </select>
+          </div>
+          <p class="hint">The breakout is fed from the XIAO's <b>3V3</b> rail, so TX_REF must be
+            <b>0.50 V</b>: the datasheet needs 3.0 V − (V<sub>LED</sub> + V<sub>cable</sub>) &gt; 1.4 V of
+            headroom. Leaving it at the 0.75 V reset value starves the red emitter.</p>
+        </div>
+        <div class="sect"><h4>Power domains</h4>
+          <label class="chk"><input type="checkbox" id="ckPdnTx"> Power down transmitter</label><br><br>
+          <label class="chk"><input type="checkbox" id="ckPdnRx"> Power down receiver</label><br><br>
+          <label class="chk"><input type="checkbox" id="ckPdnAfe"> Power down whole AFE</label>
+        </div>
+      </section>
+
+      <!-- ---- RX ------------------------------------------------- -->
+      <section class="pane" data-p="rx">
+        <div class="sect"><h4>Transimpedance stage</h4>
+          <div class="row"><label>R<sub>F</sub></label><select id="selRf" class="grow"></select></div>
+          <div class="row"><label>C<sub>F</sub></label><select id="selCf" class="grow"></select></div>
+          <div class="row"><label>Full-scale I<sub>PD</sub></label><span class="val grow" id="vFsPd" style="text-align:left">—</span></div>
+          <label class="chk"><input type="checkbox" id="ckSep"> Separate gain for LED1 and LED2</label>
+          <div id="sepBox" style="display:none;margin-top:9px">
+            <div class="row"><label>R<sub>F</sub> LED1</label><select id="selRf1" class="grow"></select></div>
+            <div class="row"><label>C<sub>F</sub> LED1</label><select id="selCf1" class="grow"></select></div>
+          </div>
+          <p class="hint">R<sub>F</sub>·C<sub>F</sub> must stay under one tenth of the Rx sample
+            time or the pulse never settles. The current pair is <b id="vRc">—</b>.</p>
+        </div>
+        <div class="sect"><h4>Ambient cancellation</h4>
+          <div class="row"><label>Cancel DAC</label>
+            <input type="range" id="inAmb" class="grow" min="0" max="10" step="1" value="0">
+            <span class="val" id="vAmb">0 µA</span>
+          </div>
+          <div class="row"><label>Stage-2 gain</label><select id="selStg2" class="grow"></select></div>
+          <label class="chk"><input type="checkbox" id="ckStg2"> Enable stage 2</label>
+          <p class="hint">Subtract the measured ambient current first, then use stage 2 to
+            spend the freed ADC range on the pulsatile component alone.</p>
+        </div>
+        <div class="sect"><h4>Anti-alias filter</h4>
+          <div class="row"><label>Corner</label>
+            <select id="selFltr" class="grow"><option value="0" selected>500 Hz</option><option value="1">1000 Hz</option></select>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---- TIMING --------------------------------------------- -->
+      <section class="pane" data-p="timing">
+        <div class="sect"><h4>Phase map · one pulse-repetition period</h4>
+          <div class="well fixed" style="border:1px solid var(--hair);border-radius:var(--r-sm);height:240px">
+            <canvas id="cTiming" height="240"></canvas>
+          </div>
+          <p class="hint">Drawn live from registers 0x01–0x1D. Bars are, from the top:
+            LED drive, Rx sample, ADC convert and ADC reset for each of the four phases.</p>
+        </div>
+        <div class="sect"><h4>Edge registers</h4>
+          <div id="timingList"></div>
+        </div>
+      </section>
+
+      <!-- ---- REGISTERS ------------------------------------------ -->
+      <section class="pane" data-p="regs">
+        <div class="sect">
+          <div class="btnrow" style="margin-bottom:10px">
+            <button class="btn sm" id="btnReadAll">Read all</button>
+            <button class="btn sm" id="btnSaveCfg">Save config</button>
+            <button class="btn sm" id="btnLoadCfg">Load config</button>
+            <input type="file" id="fileCfg" accept=".json" style="display:none">
+          </div>
+          <div class="regscroll"><table class="regtbl"><thead><tr>
+            <th class="addr">#</th><th>Register</th><th style="text-align:right">Value</th>
+          </tr></thead><tbody id="regBody"></tbody></table></div>
+          <div class="fields" id="regFields"><p class="hint">Select a register to decode its bit fields.</p></div>
+        </div>
+      </section>
+
+      <!-- ---- DIAG ----------------------------------------------- -->
+      <section class="pane" data-p="diag">
+        <div class="sect"><h4>Sensor & cable diagnostics</h4>
+          <div class="btnrow">
+            <button class="btn sm" id="btnDiag">Run diagnostics</button>
+            <button class="btn sm" id="btnSelftest">SPI self-test</button>
+            <button class="btn sm" id="btnPintest">Pin probe</button>
+            <button class="btn sm" id="btnSpitest">Sweep SPI clock</button>
+          </div>
+          <div id="diagOut" style="margin-top:10px"></div>
+          <p class="hint">The AFE walks nine fault cases — LED open/short, photodiode
+            open/short, and each input shorted to the ground or LED cable. It takes 8 ms
+            and the ADC data is invalid while it runs.</p>
+        </div>
+        <div class="sect"><h4>Console</h4>
+          <div class="row">
+            <input type="text" id="inCmd" class="grow" placeholder="R:23   ·   W:22,012828   ·   STATUS?">
+            <button class="btn sm" id="btnSend">Send</button>
+          </div>
+          <div class="log" id="log"></div>
+          <div class="btnrow" style="margin-top:8px">
+            <button class="btn sm" id="btnClearLog">Clear</button>
+            <button class="btn sm" id="btnStatus">STATUS?</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </aside>
+</div>
+
+<!-- ================================================================= -->
+<div class="statusbar">
+  <span id="sbLink">● disconnected</span>
+  <span>rx <b id="sbRx">0</b> smp</span>
+  <span>rate <b id="sbRate">0</b> Hz</span>
+  <span>frames <b id="sbFrames">0</b></span>
+  <span>crc err <b id="sbCrc">0</b></span>
+  <span>drop <b id="sbDrop">0</b></span>
+  <span style="margin-left:auto"><canvas id="sbSpark" width="120" height="24"></canvas></span>
+  <span>render <b id="sbFps">0</b> fps</span>
+  <span>frame <b id="sbP99">—</b></span>
+  <span>miss <b id="sbMiss">0</b></span>
+  <span>panel <b id="sbPanel">—</b></span>
+  <span>cols <b id="sbCols">0</b></span>
+  <span>vbat <b id="sbVbat">—</b></span>
+</div>
+
+<!-- ================================================================= -->
+<div class="overlay" id="overlay">
+  <div class="wm">
+    <h1>AFE4490 Studio</h1>
+    <p>Register-level control and live plethysmography for the TI AFE4490
+       on a Seeed XIAO nRF52840 Sense. Connect over USB with Web Serial —
+       Chrome or Edge only.</p>
+    <div class="wire">
+      H3.1&nbsp; VCC&nbsp;&nbsp;→ <b>3V3</b>&nbsp;&nbsp;&nbsp; H3.12 GND&nbsp; → <b>GND</b><br>
+      H3.11 DDRY&nbsp; → <b>D0</b>&nbsp;&nbsp;&nbsp;&nbsp; H3.10 MISO → <b>D1</b><br>
+      H3.9&nbsp; SCK&nbsp;&nbsp; → <b>D2</b>&nbsp;&nbsp;&nbsp;&nbsp; H3.8&nbsp; MOSI → <b>D3</b><br>
+      H3.7&nbsp; CS0&nbsp;&nbsp; → <b>D4</b>&nbsp;&nbsp;&nbsp;&nbsp; H3.6&nbsp; START→ <b>D5</b> (reset)<br>
+      H3.5&nbsp; PDWN&nbsp; → <b>D6</b>
+    </div>
+    <button class="btn primary" id="btnConnect2">Connect over USB</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ==================================================================
+   1. REGISTER MODEL
+   Mirrors src/AFE4490_Regs.h. `f` lists bit fields as
+   [msb, lsb, name, description, enumTable?].
+   ================================================================== */
+const RF_OPTS  = ['500 kΩ','250 kΩ','100 kΩ','50 kΩ','25 kΩ','10 kΩ','1 MΩ','none'];
+const RF_OHMS  = [500e3,250e3,100e3,50e3,25e3,10e3,1e6,0];
+const STG2_OPTS= ['0 dB (×1)','3.5 dB (×1.5)','6 dB (×2)','9.5 dB (×3)','12 dB (×4)','do not use','do not use','do not use'];
+const STG2_LIN = [1,1.5,2,3,4,1,1,1];
+const TXREF_OPTS=['0.75 V','0.50 V','1.00 V','0.75 V'];
+const LED_FS   = [[150,75,150,0],[100,50,100,0],[200,100,200,0],[150,75,150,0]];
+const ALM_OPTS = ['sample LED2 / LED1','LED2 / LED1 drive','sample ambient LED2 / LED1',
+                  'LED2 / LED1 convert','ambient convert','no output','no output','no output'];
+const CF_ADD   = [5,15,25,50,150];
+
+const cfPf = v => 5 + CF_ADD.reduce((s,x,i)=> s + ((v>>i&1)?x:0), 0);
+const CF_OPTS = Array.from({length:32},(_,v)=>`${cfPf(v)} pF`);
+
+// The 29 timing registers share one shape, so describe them from a table.
+const TIMING = [
+  [0x01,'LED2STC','Sample LED2 (RED) start'],   [0x02,'LED2ENDC','Sample LED2 end'],
+  [0x03,'LED2LEDSTC','LED2 drive on'],          [0x04,'LED2LEDENDC','LED2 drive off'],
+  [0x05,'ALED2STC','Sample ambient (LED2) start'],[0x06,'ALED2ENDC','Sample ambient (LED2) end'],
+  [0x07,'LED1STC','Sample LED1 (IR) start'],    [0x08,'LED1ENDC','Sample LED1 end'],
+  [0x09,'LED1LEDSTC','LED1 drive on'],          [0x0A,'LED1LEDENDC','LED1 drive off'],
+  [0x0B,'ALED1STC','Sample ambient (LED1) start'],[0x0C,'ALED1ENDC','Sample ambient (LED1) end'],
+  [0x0D,'LED2CONVST','Convert LED2 start'],     [0x0E,'LED2CONVEND','Convert LED2 end'],
+  [0x0F,'ALED2CONVST','Convert ambient LED2 start'],[0x10,'ALED2CONVEND','Convert ambient LED2 end'],
+  [0x11,'LED1CONVST','Convert LED1 start'],     [0x12,'LED1CONVEND','Convert LED1 end'],
+  [0x13,'ALED1CONVST','Convert ambient LED1 start'],[0x14,'ALED1CONVEND','Convert ambient LED1 end'],
+  [0x15,'ADCRSTSTCT0','ADC reset 0 start'],     [0x16,'ADCRSTENDCT0','ADC reset 0 end'],
+  [0x17,'ADCRSTSTCT1','ADC reset 1 start'],     [0x18,'ADCRSTENDCT1','ADC reset 1 end'],
+  [0x19,'ADCRSTSTCT2','ADC reset 2 start'],     [0x1A,'ADCRSTENDCT2','ADC reset 2 end'],
+  [0x1B,'ADCRSTSTCT3','ADC reset 3 start'],     [0x1C,'ADCRSTENDCT3','ADC reset 3 end'],
+  [0x1D,'PRPCOUNT','Pulse repetition period − 1'],
+];
+
+const REGS = [
+  {a:0x00,n:'CONTROL0',acc:'W',d:'Software reset, diagnostics, SPI read mode. Write-only — the value shown is the driver shadow.',
+   f:[[3,3,'SW_RST','Software reset, self-clearing'],
+      [2,2,'DIAG_EN','Start the diagnostics sequence, self-clearing'],
+      [1,1,'TIM_CNT_RST','Hold the timer counters in reset'],
+      [0,0,'SPI_READ','Register read-back mode']]},
+  ...TIMING.map(([a,n,d])=>({a,n,acc:'RW',d:d+'. Counts of the 4 MHz clock.',f:[[15,0,n,'Edge position within the pulse-repetition period']]})),
+  {a:0x1E,n:'CONTROL1',acc:'RW',d:'Timer enable, ADC averaging and alarm-pin clock routing.',
+   f:[[11,9,'CLKALMPIN','Internal clock brought out on PD_ALM / LED_ALM',ALM_OPTS],
+      [8,8,'TIMEREN','Timer module enable — everything stops when clear'],
+      [7,0,'NUMAV','Number of ADC averages − 1 (saturates at 16)']]},
+  {a:0x1F,n:'SPARE1',acc:'RW',d:'Reserved for future use. Must be written 0.',f:[[23,0,'SPARE1','']]},
+  {a:0x20,n:'TIAGAIN',acc:'RW',d:'Transimpedance settings for LED1 when separate-gain mode is on.',
+   f:[[15,15,'ENSEPGAIN','Use independent gain for LED1 and LED2'],
+      [14,14,'STAGE2EN1','Enable stage 2 on the LED1 path'],
+      [10,8,'STG2GAIN1','Stage-2 gain, LED1',STG2_OPTS],
+      [7,3,'CF_LED1','Feedback capacitance, LED1',CF_OPTS],
+      [2,0,'RF_LED1','Feedback resistance, LED1',RF_OPTS]]},
+  {a:0x21,n:'TIA_AMB_GAIN',acc:'RW',d:'Transimpedance for LED2 (and both channels when separate-gain is off), ambient cancellation DAC and the anti-alias corner.',
+   f:[[19,16,'AMBDAC','Ambient cancellation current',Array.from({length:16},(_,i)=>i<=10?`${i} µA`:'do not use')],
+      [15,15,'FLTRCNRSEL','Low-pass corner',['500 Hz','1000 Hz']],
+      [14,14,'STAGE2EN2','Enable stage 2 on the LED2 path'],
+      [10,8,'STG2GAIN2','Stage-2 gain, LED2',STG2_OPTS],
+      [7,3,'CF_LED2','Feedback capacitance, LED2',CF_OPTS],
+      [2,0,'RF_LED2','Feedback resistance, LED2',RF_OPTS]]},
+  {a:0x22,n:'LEDCNTRL',acc:'RW',d:'LED current range and the 8-bit drive code for each emitter.',
+   f:[[17,16,'LED_RANGE','Full-scale current range',['range 0','range 1','range 2','Tx off']],
+      [15,8,'LED1','LED1 (IR) drive code, I = code/256 × full scale'],
+      [7,0,'LED2','LED2 (RED) drive code, I = code/256 × full scale']]},
+  {a:0x23,n:'CONTROL2',acc:'RW',d:'Transmitter reference, driver topology, crystal and power-down control.',
+   f:[[18,17,'TX_REF','Transmitter reference voltage',TXREF_OPTS],
+      [16,16,'RST_CLK_ON_PD_ALM','Route the ADC reset clock to PD_ALM'],
+      [15,15,'EN_ADC_BYP','ADC bypass — analog output on RXOUTP/RXOUTN'],
+      [11,11,'TXBRGMOD','LED driver topology',['H-bridge','push-pull']],
+      [10,10,'DIGOUT_TRISTATE','Tri-state the digital outputs when SPI is idle'],
+      [9,9,'XTALDIS','Disable the crystal oscillator, drive XIN externally'],
+      [8,8,'EN_SLOW_DIAG','Slow diagnostics — 16 ms instead of 8 ms'],
+      [2,2,'PDNTX','Power down the transmitter'],
+      [1,1,'PDNRX','Power down the receiver'],
+      [0,0,'PDNAFE','Power down the entire AFE']]},
+  {a:0x24,n:'SPARE2',acc:'RW',d:'Reserved. Must be written 0.',f:[[23,0,'SPARE2','']]},
+  {a:0x25,n:'SPARE3',acc:'RW',d:'Reserved. Must be written 0.',f:[[23,0,'SPARE3','']]},
+  {a:0x26,n:'SPARE4',acc:'RW',d:'Reserved. Must be written 0.',f:[[23,0,'SPARE4','']]},
+  {a:0x27,n:'RESERVED1',acc:'R',d:'Factory use. Read-back varies between devices.',f:[]},
+  {a:0x28,n:'RESERVED2',acc:'R',d:'Factory use. Read-back varies between devices.',f:[]},
+  {a:0x29,n:'ALARM',acc:'RW',d:'Alarm-pin clock monitoring.',
+   f:[[7,7,'ALMPINCLKEN','Bring internal clocks out on the alarm pins']]},
+  {a:0x2A,n:'LED2VAL',acc:'R',d:'Latest LED2 (RED) conversion, 22-bit two’s complement.',f:[]},
+  {a:0x2B,n:'ALED2VAL',acc:'R',d:'Latest ambient sample from the LED2 phase.',f:[]},
+  {a:0x2C,n:'LED1VAL',acc:'R',d:'Latest LED1 (IR) conversion.',f:[]},
+  {a:0x2D,n:'ALED1VAL',acc:'R',d:'Latest ambient sample from the LED1 phase.',f:[]},
+  {a:0x2E,n:'LED2−ALED2VAL',acc:'R',d:'LED2 minus ambient, subtracted on-chip.',f:[]},
+  {a:0x2F,n:'LED1−ALED1VAL',acc:'R',d:'LED1 minus ambient, subtracted on-chip.',f:[]},
+  {a:0x30,n:'DIAG',acc:'R',d:'Fault flags latched at the end of the diagnostics sequence.',
+   f:[[12,12,'PD_ALM','Photodiode alarm summary'],[11,11,'LED_ALM','LED alarm summary'],
+      [10,10,'LED1OPEN','LED1 open'],[9,9,'LED2OPEN','LED2 open'],[8,8,'LEDSC','LED short'],
+      [7,7,'OUTPSHGND','TXP shorted to the ground cable'],[6,6,'OUTNSHGND','TXN shorted to the ground cable'],
+      [5,5,'PDOC','Photodiode open'],[4,4,'PDSC','Photodiode short'],
+      [3,3,'INNSCGND','INN shorted to the ground cable'],[2,2,'INPSCGND','INP shorted to the ground cable'],
+      [1,1,'INNSCLED','INN shorted to the LED cable'],[0,0,'INPSCLED','INP shorted to the LED cable']]},
+];
+const REG_BY_ADDR = Object.fromEntries(REGS.map(r=>[r.a,r]));
+
+/* ==================================================================
+   2. SERIAL LINK  (protocol A1)
+   ================================================================== */
+const $  = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+
+const link = {
+  port:null, reader:null, writer:null, connected:false,
+  rx:new Uint8Array(0), pending:[], frames:0, crcErr:0, samples:0,
+};
+const dec = new TextDecoder();
+const enc = new TextEncoder();
+
+function logLine(text, cls){
+  const el = $('#log');
+  const div = document.createElement('div');
+  div.className = cls || 'rx';
+  div.textContent = text;
+  el.appendChild(div);
+  while (el.children.length > 400) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+function crc16(b, start, count){
+  let crc = 0xFFFF;
+  for (let i=0;i<count;i++){
+    crc ^= b[start+i] << 8;
+    for (let k=0;k<8;k++) crc = (crc & 0x8000) ? ((crc<<1)^0x1021)&0xFFFF : (crc<<1)&0xFFFF;
+  }
+  return crc;
+}
+
+/* A persistent receive buffer with a read cursor. The old version built
+   two fresh Uint8Arrays on every chunk; at 500 samples/s that was a
+   thousand short-lived allocations a second feeding the collector. */
+let rxBuf = new Uint8Array(16384), rxLen = 0;
+function resetRx(){ rxLen = 0; }
+
+async function connect(){
+  if (!('serial' in navigator)) { alert('Web Serial is unavailable. Use Chrome or Edge over HTTPS or file://'); return; }
+  try{
+    link.port = await navigator.serial.requestPort();
+    await link.port.open({ baudRate: 115200, bufferSize: 8192 });
+    link.writer = link.port.writable.getWriter();
+    link.connected = true;
+    resetRx();
+    $('#overlay').classList.add('hide');
+    $('#btnConnect').textContent = 'Disconnect';
+    $('#btnStream').disabled = false;
+    $('#liveDot').classList.add('live');
+    $('#sbLink').textContent = '● connected';
+    $('#sbLink').style.color = 'var(--ok)';
+    readLoop();
+    setTimeout(async ()=>{
+      await send('PING');
+      await send('CAPS?');
+      await readAllRegisters();
+      await send('STATUS?', /^ST:/, 1500);
+      /* Connecting an instrument and seeing a blank screen until you find
+         a second button is a poor first impression. If the bus is healthy,
+         just start. If it is not, the banner explains why nothing moves. */
+      if (linkHealth() === 'ok' && !streaming) setStreaming(true);
+      else refreshHealthBanner();
+    }, 350);
+  }catch(e){ if (e && e.name !== 'NotFoundError') logLine('open failed: '+e.message,'er'); }
+}
+
+async function disconnect(){
+  try{
+    if (streaming) await send('STOP');
+    link.connected = false;
+    if (link.reader){ await link.reader.cancel().catch(()=>{}); link.reader = null; }
+    if (link.writer){ link.writer.releaseLock(); link.writer = null; }
+    if (link.port){ await link.port.close().catch(()=>{}); link.port = null; }
+  }catch(e){}
+  $('#btnConnect').textContent = 'Connect';
+  $('#btnStream').disabled = true;
+  $('#liveDot').classList.remove('live');
+  $('#sbLink').textContent = '● disconnected';
+  $('#sbLink').style.color = '';
+}
+
+async function readLoop(){
+  while (link.connected && link.port && link.port.readable){
+    link.reader = link.port.readable.getReader();
+    try{
+      while (true){
+        const {value, done} = await link.reader.read();
+        if (done) break;
+        if (value) feed(value);
+      }
+    }catch(e){ /* device unplugged */ }
+    finally{ try{ link.reader.releaseLock(); }catch(e){} }
+    if (!link.connected) break;
+  }
+  if (link.connected) disconnect();
+}
+
+/* The two streams never collide: an ASCII line can never contain 0xAA,
+   and a binary frame is always consumed whole, so the scanner can never
+   wander into a payload looking for a newline. */
+function feed(chunk){
+  if (rxLen + chunk.length > rxBuf.length){
+    let cap = rxBuf.length;
+    while (cap < rxLen + chunk.length) cap *= 2;
+    const grown = new Uint8Array(cap);
+    grown.set(rxBuf.subarray(0, rxLen));
+    rxBuf = grown;
+  }
+  rxBuf.set(chunk, rxLen);
+  rxLen += chunk.length;
+
+  const b = rxBuf;
+  let i = 0;
+  while (i < rxLen){
+    if (b[i] === 0xAA){
+      if (i + 1 >= rxLen) break;
+      if (b[i+1] === 0x55){
+        if (i + 5 > rxLen) break;
+        const len = b[i+3] | (b[i+4] << 8);
+        if (len > 4096){ i++; continue; }               // implausible: resync
+        const total = 5 + len + 2;
+        if (i + total > rxLen) break;                   // wait for the rest
+        handleFrame(b, i, len);
+        i += total; continue;
+      }
+      /* A 0xAA that is not followed by 0x55 is a stray byte - the tail of
+         a frame left in the driver from a previous session, most often.
+         Skip exactly one byte so the scan always advances. Falling into
+         the text branch here used to set i back to itself and spin the
+         tab forever. */
+      i++; continue;
+    }
+    let nl = -1, hitFrame = false;
+    for (let k = i; k < rxLen; k++){
+      if (b[k] === 0x0A){ nl = k; break; }
+      if (b[k] === 0xAA){ hitFrame = true; nl = k; break; }
+    }
+    if (hitFrame){ i = nl; continue; }                  // nl > i, always
+    if (nl < 0) break;
+    const line = dec.decode(b.subarray(i, nl)).trim();
+    if (line) handleLine(line);
+    i = nl + 1;
+  }
+  if (i > 0){ b.copyWithin(0, i, rxLen); rxLen -= i; }
+}
+
+function handleFrame(b, off, len){
+  const crcRx = b[off+5+len] | (b[off+6+len] << 8);
+  if (crc16(b, off+2, 3+len) !== crcRx){ link.crcErr++; return; }
+  link.frames++;
+  if (b[off+2] !== 0x01) return;
+
+  const dv = new DataView(b.buffer, b.byteOffset + off + 5, len);
+  const count = dv.getUint8(4);
+  const rate  = dv.getUint16(6, true);
+  if (rate > 0 && rate !== stats.rate){ stats.rate = rate; retune(rate); }
+  let o = 8;
+  for (let k=0;k<count;k++){
+    ingest(dv.getInt32(o,true), dv.getInt32(o+4,true), dv.getInt32(o+8,true),
+           dv.getInt32(o+12,true), dv.getInt32(o+16,true), dv.getInt32(o+20,true));
+    o += 24;
+  }
+}
+
+/* Some commands stream progress lines before their final reply. A tap
+   lets the caller collect them without racing the shared log. */
+let lineTap = null;
+
+function handleLine(line){
+  if (lineTap) lineTap(line);
+  if (line.startsWith('D,')){                            // CSV stream mode
+    const p = line.split(',');
+    if (p.length >= 8){
+      ingest(+p[2],+p[3],+p[4],+p[5],+p[6],+p[7]);
+      return;
+    }
+  }
+  logLine('← '+line, line.startsWith('ERR:') ? 'er' : line.startsWith('EVT:') ? 'ev' : 'rx');
+
+  if (line.startsWith('REG:')){
+    const m = /^REG:([0-9A-F]{2})=([0-9A-F]{6})$/i.exec(line);
+    if (m){ regValues[parseInt(m[1],16)] = parseInt(m[2],16); scheduleRegRender(); }
+  } else if (line.startsWith('AFE:PONG:')){
+    $('#pillFw').innerHTML = 'FW <b>'+line.slice(9)+'</b>';
+  } else if (line.startsWith('ST:')){
+    parseStatus(line.slice(3));
+  } else if (line.startsWith('EVT:READY')){
+    readAllRegisters();
+  } else if (line.startsWith('EVT:SPI:FAIL')){
+    showBanner('bad', 'Boot self-test failed',
+      'The firmware could not read back a register it had just written. '
+      + 'Check 3V3/GND on H3 and the four SPI lines, then run the pin probe.',
+      'Run pin probe', ()=>{ $('.tab[data-p=diag]').click(); $('#btnPintest').click(); });
+  }
+  // Resolve whoever is waiting on this reply.
+  for (let i=0;i<link.pending.length;i++){
+    if (link.pending[i].test(line)){ link.pending[i].resolve(line); link.pending.splice(i,1); break; }
+  }
+}
+
+function parseStatus(s){
+  const kv = Object.fromEntries(s.split(',').map(x=>{ const i=x.indexOf('='); return [x.slice(0,i), x.slice(i+1)]; }));
+  if (kv.prf){
+    $('#pillRate').innerHTML = 'PRF <b>'+kv.prf+' Hz</b>';
+    const r = (+kv.prf) / Math.max(1, +(kv.dec || 1));
+    if (r >= 10 && r <= 5000 && r !== stats.rate){ stats.rate = r; retune(r); }
+  }
+  if (kv.drop!==undefined){
+    const d = (+kv.drop) + (+kv.txdrop || 0);
+    $('#pillDrop').innerHTML = 'DROP <b>'+d+'</b>';
+    $('#pillDrop').className = 'pill' + (d>0?' warn':'');
+    $('#sbDrop').textContent = d;
+  }
+  if (kv.led1ma) $('#pillLed').innerHTML = 'LED <b>'+(+kv.led1ma).toFixed(1)+' / '+(+kv.led2ma).toFixed(1)+' mA</b>';
+  // STATUS is authoritative: the SPIM quantizes, so what we asked for and
+  // what is on the wire can differ.
+  if (kv.spihz && $('#selSpi').value !== kv.spihz){
+    const opt = Array.from($('#selSpi').options).find(o=>o.value===kv.spihz);
+    if (opt) $('#selSpi').value = kv.spihz;
+  }
+  if (kv.spidrive) $('#selDrive').value = (kv.spidrive === 'H0H1') ? '1' : '0';
+  // The board runs its own pulse detector for the heartbeat LED; show it
+  // next to the console's own estimate so a disagreement is visible.
+  if (kv.bpm !== undefined && $('#subHr'))
+    $('#subHr').dataset.fw = kv.bpm;
+  if (kv.vbat)   $('#sbVbat').textContent = (+kv.vbat).toFixed(2)+' V';
+}
+
+async function send(cmd, expect, timeout=3000){
+  if (!link.connected || !link.writer) return null;
+  logLine('→ '+cmd, 'tx');
+  const p = expect ? new Promise((resolve)=>{
+    const entry = { test:(l)=>expect.test(l), resolve };
+    link.pending.push(entry);
+    setTimeout(()=>{ const i=link.pending.indexOf(entry); if(i>=0){ link.pending.splice(i,1); resolve(null);} }, timeout);
+  }) : Promise.resolve(null);
+  await link.writer.write(enc.encode(cmd+'\n'));
+  return p;
+}
+
+/* ==================================================================
+   3. SIGNAL PIPELINE
+   ================================================================== */
+const N = 4096;                                    // ring depth (~8 s at 500 Hz)
+const buf = {
+  red:new Float32Array(N),    ir:new Float32Array(N),      // LED on
+  amb2:new Float32Array(N),   amb1:new Float32Array(N),    // LED off
+  redAmb:new Float32Array(N), irAmb:new Float32Array(N),   // on - off
+  redAc:new Float32Array(N),  irAc:new Float32Array(N),    // 0.5-5 Hz band
+  head:0, count:0, written:0
+};
+const stats = { rate:500, lastSec:performance.now(), sinceSec:0, fps:0, frames:0 };
+
+/* Second-order Butterworth sections. The band is 0.5–5 Hz: below that is
+   baseline wander from breathing and cuff pressure, above it is noise. */
+function makeBiquad(){ return {x1:0,x2:0,y1:0,y2:0}; }
+function designHP(fc, fs){
+  const w = Math.tan(Math.PI*fc/fs), n = 1/(1+Math.SQRT2*w+w*w);
+  return {b0:n, b1:-2*n, b2:n, a1:2*(w*w-1)*n, a2:(1-Math.SQRT2*w+w*w)*n};
+}
+function designLP(fc, fs){
+  const w = Math.tan(Math.PI*fc/fs), n = 1/(1+Math.SQRT2*w+w*w);
+  return {b0:w*w*n, b1:2*w*w*n, b2:w*w*n, a1:2*(w*w-1)*n, a2:(1-Math.SQRT2*w+w*w)*n};
+}
+function step(c, s, x){
+  const y = c.b0*x + c.b1*s.x1 + c.b2*s.x2 - c.a1*s.y1 - c.a2*s.y2;
+  s.x2=s.x1; s.x1=x; s.y2=s.y1; s.y1=y; return y;
+}
+
+let coefHP = designHP(0.5, 500), coefLP = designLP(5, 500);
+const stHPr = makeBiquad(), stLPr = makeBiquad();
+const stHPi = makeBiquad(), stLPi = makeBiquad();
+let dcRed = 0, dcIr = 0, dcInit = false;
+
+function retune(fs){
+  coefHP = designHP(0.5, Math.max(20,fs));
+  coefLP = designLP(Math.min(5, fs/4), Math.max(20,fs));
+}
+
+function ingest(led2, aled2, led1, aled1, led2a, led1a){
+  link.samples++;
+  stats.sinceSec++;
+
+  // Slow DC tracker (~1 s) for the perfusion ratio.
+  const a = 1 - Math.exp(-1/Math.max(1,stats.rate));
+  if (!dcInit){ dcRed = led2a; dcIr = led1a; dcInit = true; }
+  dcRed += a*(led2a - dcRed);
+  dcIr  += a*(led1a - dcIr);
+
+  const rAc = step(coefLP, stLPr, step(coefHP, stHPr, led2a));
+  const iAc = step(coefLP, stLPi, step(coefHP, stHPi, led1a));
+
+  const h = buf.head;
+  buf.red[h]=led2; buf.ir[h]=led1;
+  buf.amb2[h]=aled2; buf.amb1[h]=aled1;
+  buf.redAmb[h]=led2a; buf.irAmb[h]=led1a;
+  buf.redAc[h]=rAc; buf.irAc[h]=iAc;
+  buf.head = (h+1) % N;
+  buf.written++;
+  if (buf.count < N) buf.count++;
+  if (cap.recording) capAppend(led2, aled2, led1, aled1, led2a, led1a);
+}
+
+const at = (arr,i) => arr[((buf.head - 1 - i) % N + N) % N];   // 0 = newest
+
+/* ---- pulse rate: autocorrelation over the last 6 s -------------------
+   Decimated to ~25 Hz first. A PPG carries nothing above a few Hz, and
+   the lag search is O(win x lags): at the raw 500 Hz that is ~2.6 M
+   multiply-accumulates per call, far too heavy to sit in a render loop.
+   At 25 Hz it costs ~7 k, and a parabolic fit around the winning lag
+   recovers the resolution the decimation gave away. */
+function estimateHr(){
+  const fs = stats.rate;
+  const dsf = Math.max(1, Math.round(fs/25));
+  const fsd = fs/dsf;
+  const win = Math.min(Math.floor(buf.count/dsf), Math.floor(fsd*6));
+  if (win < fsd*2.5) return null;
+
+  const x = new Float32Array(win);
+  let mean = 0;
+  for (let i=0;i<win;i++){ x[i] = at(buf.irAc, (win-1-i)*dsf); mean += x[i]; }
+  mean /= win;
+  let energy = 0;
+  for (let i=0;i<win;i++){ x[i] -= mean; energy += x[i]*x[i]; }
+  if (energy < 1e-9) return null;
+
+  const lagMin = Math.max(2, Math.floor(fsd*60/220));       // 220 bpm
+  const lagMax = Math.min(win-2, Math.floor(fsd*60/30));    //  30 bpm
+  if (lagMax <= lagMin) return null;
+
+  const ac = new Float32Array(lagMax+2);
+  let best = -Infinity, bestLag = -1;
+  for (let lag=lagMin; lag<=lagMax; lag++){
+    let acc = 0;
+    for (let i=0;i<win-lag;i++) acc += x[i]*x[i+lag];
+    ac[lag] = acc/(win-lag);
+    if (ac[lag] > best){ best = ac[lag]; bestLag = lag; }
+  }
+  const norm = energy/win;
+  if (bestLag < 0 || best/norm < 0.30) return null;         // too incoherent
+
+  // Parabolic vertex through the three samples straddling the peak.
+  let lag = bestLag;
+  if (bestLag > lagMin && bestLag < lagMax){
+    const a = ac[bestLag-1], bb = ac[bestLag], c = ac[bestLag+1];
+    const den = a - 2*bb + c;
+    if (Math.abs(den) > 1e-12) lag = bestLag + 0.5*(a - c)/den;
+  }
+  return { bpm: 60*fsd/lag, quality: Math.min(1, best/norm) };
+}
+
+/* ---- SpO2: the ratio-of-ratios, calibrated with the usual linear fit -- */
+function estimateSpo2(){
+  const fs = stats.rate, win = Math.min(buf.count, Math.floor(fs*4));
+  if (win < fs*2) return null;
+  let sr=0, si=0;
+  let rLo=Infinity, rHi=-Infinity, iLo=Infinity, iHi=-Infinity;
+  for (let i=0;i<win;i++){
+    const r=at(buf.redAc,i), q=at(buf.irAc,i);
+    sr+=r*r; si+=q*q;
+    if(r<rLo)rLo=r; if(r>rHi)rHi=r;
+    if(q<iLo)iLo=q; if(q>iHi)iHi=q;
+  }
+  // RMS drives the ratio-of-ratios (it is the noise-tolerant amplitude
+  // estimate); peak-to-peak drives the displayed perfusion index, which
+  // is how every other oximeter defines it.
+  const acRed = Math.sqrt(sr/win), acIr = Math.sqrt(si/win);
+  const ppRed = rHi-rLo, ppIr = iHi-iLo;
+  const dR = Math.abs(dcRed), dI = Math.abs(dcIr);
+  if (dR < 1000 || dI < 1000 || acIr < 1e-3) return null;
+  const R = (acRed/dR) / (acIr/dI);
+  if (!isFinite(R) || R <= 0.2 || R > 3.4) return null;
+  // Empirical curve used by most reference designs. Any real product must
+  // replace this with a clinical calibration against a CO-oximeter.
+  const spo2 = Math.max(50, Math.min(100, 110 - 25*R));
+  return { spo2, R, pi: 100*ppIr/dI, ppIr, ppRed };
+}
+
+/* ---- FFT (radix-2, in place) --------------------------------------- */
+function fft(re, im){
+  const n = re.length;
+  for (let i=1, j=0; i<n; i++){
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j){ [re[i],re[j]]=[re[j],re[i]]; [im[i],im[j]]=[im[j],im[i]]; }
+  }
+  for (let len=2; len<=n; len<<=1){
+    const ang = -2*Math.PI/len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i=0;i<n;i+=len){
+      let cr = 1, ci = 0;
+      for (let k=0;k<len/2;k++){
+        const ur = re[i+k], ui = im[i+k];
+        const vr = re[i+k+len/2]*cr - im[i+k+len/2]*ci;
+        const vi = re[i+k+len/2]*ci + im[i+k+len/2]*cr;
+        re[i+k]=ur+vr; im[i+k]=ui+vi;
+        re[i+k+len/2]=ur-vr; im[i+k+len/2]=ui-vi;
+        const ncr = cr*wr - ci*wi; ci = cr*wi + ci*wr; cr = ncr;
+      }
+    }
+  }
+}
+
+/* ==================================================================
+   4. RENDERING - incremental sweep
+   ------------------------------------------------------------------
+   The first version of this console repainted every trace in full on
+   every animation frame: about 2,900 path segments per trace, eight
+   traces, plus four whole-canvas clears. That is O(canvas width) of
+   work per frame forever, and on a maximised 1920-wide window it is
+   what held the display to 30-40 fps no matter how fast the machine is.
+
+   A sweep display does not need any of it. Between two adjacent frames
+   the picture changes only in a narrow band at the sweep head: at
+   120 fps with a 5 s window the head advances roughly two pixels. So
+   the trace stays on the canvas between frames and each frame repaints
+   only
+
+       [ cursor trail ][ columns the head just crossed ][ wipe gap ]
+
+   which is around 30 columns instead of 1,400. The grid, axis labels
+   and lane rules live on a second canvas underneath, painted only when
+   the scale or the geometry actually changes. Canvas shadowBlur - a
+   full gaussian blur of everything stroked - is not used anywhere; the
+   glow is three cheap layered strokes, which reads the same at these
+   line widths and costs orders of magnitude less.
+
+   Full repaints still happen, but only when what is on screen is
+   genuinely wrong: a resize, a sweep-speed change, a scale adoption, or
+   a chart coming back from being hidden.
+   ================================================================== */
+
+const FS = 2097152;                 // 2^21 = ADC full scale
+let windowSec = 5;                  // sweep window
+let fpsCap = 0;                     // 0 = draw on every vsync
+let quality = 'high';
+let laneMode = 'split';
+let viewMode = 'monitor';
+
+/* Three cheap strokes instead of one blurred one. */
+const QUALITY = {
+  high:     { env:true,  envA:.38, halo:5.0, haloA:.075, glow:2.5, glowA:.17, core:1.35, cursor:true },
+  balanced: { env:true,  envA:.30, halo:0,   haloA:0,    glow:2.2, glowA:.13, core:1.30, cursor:true },
+  raw:      { env:false, envA:0,   halo:0,   haloA:0,    glow:0,   glowA:0,   core:1.25, cursor:false }
+};
+
+/* The LED-minus-ambient registers come out inverted relative to the
+   conventional plethysmogram - see the datasheet notes on figures 128
+   and 129 - so the display flips those two charts back. Nothing about
+   the stored data changes, only the y axis, which keeps SpO2 (a ratio
+   of RMS amplitudes) completely unaffected. */
+let invertPleth = true;
+
+/* Reading clientWidth forces a synchronous layout, so it is done only
+   when something really changed shape. */
+let sizeDirty = true;
+const sizeCache = new WeakMap();
+function fitCanvas(cv){
+  let m = sizeCache.get(cv);
+  if (!m || sizeDirty){
+    const w = cv.clientWidth || 600;
+    const h = cv.clientHeight || parseInt(cv.getAttribute('height'),10) || 150;
+    const dpr = Math.min(devicePixelRatio||1, 2);
+    if (cv.width !== Math.round(w*dpr) || cv.height !== Math.round(h*dpr)){
+      cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr);
+    }
+    m = {w, h, dpr};
+    sizeCache.set(cv, m);
+  }
+  const g = cv.getContext('2d');
+  g.setTransform(m.dpr,0,0,m.dpr,0,0);
+  return {g, w:m.w, h:m.h};
+}
+
+function grid(g, w, h, rows=4, cols=8){
+  g.strokeStyle = 'rgba(146,176,210,.07)'; g.lineWidth = 1;
+  g.beginPath();
+  for (let i=1;i<rows;i++){ const y=Math.round(h*i/rows)+.5; g.moveTo(0,y); g.lineTo(w,y); }
+  for (let i=1;i<cols;i++){ const x=Math.round(w*i/cols)+.5; g.moveTo(x,0); g.lineTo(x,h); }
+  g.stroke();
+}
+
+/* An empty well with a grid on it looks identical whether the device is
+   idle, unplugged or broken. Spell it out. */
+function emptyNote(){
+  if (!link.connected) return 'not connected';
+  if (linkHealth() === 'dead') return 'AFE not answering on SPI \u2014 run the pin probe';
+  if (!streaming) return 'press Start to begin acquisition';
+  return 'waiting for ADC_RDY \u2014 no samples yet';
+}
+
+function drawEmpty(g, w, h, msg){
+  g.fillStyle = 'rgba(107,127,148,.62)';
+  g.font = '11px Inter, system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.fillText(msg, w/2, h/2);
+  g.textAlign = 'left';
+}
+
+/* ---- the sweep chart ---------------------------------------------- */
+class SweepChart {
+  /* defs: [{src, cv, label}] - one per trace. In split mode every trace
+     gets its own lane and its own auto-scale, which matters here: RED and
+     IR sit at wildly different DC levels, so a shared axis squashes both
+     pulsatile waveforms into flat lines. */
+  constructor(key, fgSel, bgSel, defs, opts){
+    opts = opts || {};
+    this.key = key;
+    this.fg = $(fgSel); this.bg = $(bgSel);
+    this.ctx = this.fg.getContext('2d');
+    this.bctx = this.bg.getContext('2d');
+    this.defs = defs;
+    this.invertable = !!opts.invertable;
+    this.unit = opts.unit || 'v';
+    this.invert = this.invertable && invertPleth;
+    this.w = 0; this.h = 0; this.dpr = 1;
+    this.visible = 2500;
+    this.pending = 0; this.onScreen = true; this.note = null;
+    this.lastScale = 0; this.lastFull = 0;
+    this.full = true; this.bgDirty = true;
+    this.col = -1; this.painted = -1; this.phase = 0;
+    this.gap = 6; this.cursorW = 12; this.step = 1;
+    this.valid = null;
+    this.buildGroups();
+
+    // A chart hidden by a toggle, or scrolled out of the column, must not
+    // cost anything. It repaints in full when it comes back.
+    if (typeof IntersectionObserver === 'function'){
+      this.io = new IntersectionObserver(es => {
+        const vis = es[es.length-1].isIntersecting;
+        if (vis && !this.onScreen){ this.full = true; this.bgDirty = true; }
+        this.onScreen = vis;
+      }, { threshold:0 });
+      this.io.observe(this.fg);
+    }
+  }
+
+  buildGroups(){
+    const mk = list => ({ traces:list, cMin:-1, cMax:1, dMin:0, dMax:1,
+                          ready:false, drawn:false, yScale:1, top:0, h:1 });
+    this.groups = (laneMode === 'overlay' || this.defs.length === 1)
+      ? [mk(this.defs.slice())]
+      : this.defs.map(d => mk([d]));
+    this.layout();
+    this.full = true; this.bgDirty = true;
+  }
+
+  layout(){
+    const n = this.groups.length, sep = n > 1 ? 7 : 0;
+    const each = (this.h - sep*(n-1))/n;
+    for (let i=0;i<n;i++){
+      const g = this.groups[i];
+      g.top = i*(each+sep); g.h = each;
+      g.yScale = g.h/Math.max(1e-12, g.dMax-g.dMin);
+    }
+  }
+
+  allocate(){
+    const n = Math.max(1, Math.ceil(this.w));
+    this.valid = new Uint8Array(n);
+    for (const d of this.defs){
+      d.min = new Float32Array(n); d.max = new Float32Array(n); d.last = new Float32Array(n);
+    }
+    this.phase = 0; this.col = -1; this.painted = -1; this.pending = 0;
+    this.step = this.w/Math.max(1, this.visible);
+    this.gap = Math.max(4, Math.min(14, Math.round(this.w*0.008)));
+    this.cursorW = Math.max(9, Math.min(20, Math.round(this.w*0.012)));
+    this.full = true;
+  }
+
+  resize(){
+    const w = this.fg.clientWidth, h = this.fg.clientHeight;
+    if (!w || !h) return false;
+    if (w === this.w && h === this.h) return false;
+    this.w = w; this.h = h;
+    this.dpr = Math.min(devicePixelRatio||1, 2);
+    for (const cv of [this.fg, this.bg]){
+      const bw = Math.round(w*this.dpr), bh = Math.round(h*this.dpr);
+      if (cv.width !== bw || cv.height !== bh){ cv.width = bw; cv.height = bh; }
+    }
+    this.ctx.setTransform(this.dpr,0,0,this.dpr,0,0);
+    this.bctx.setTransform(this.dpr,0,0,this.dpr,0,0);
+    this.allocate(); this.layout();
+    for (const g of this.groups){ g.ready = false; g.drawn = false; }
+    this.bgDirty = true;
+    return true;
+  }
+
+  setSweep(seconds){
+    const want = Math.max(64, Math.min(30000, Math.round(stats.rate*seconds)));
+    if (want === this.visible) return;
+    this.visible = want;
+    if (this.w){ this.allocate(); for (const g of this.groups) g.ready = false; this.bgDirty = true; }
+  }
+
+  setInvert(on){
+    const v = this.invertable && on;
+    if (v === this.invert) return;
+    this.invert = v; this.full = true; this.bgDirty = true;
+  }
+
+  reset(){
+    if (this.valid) this.valid.fill(0);
+    this.phase = 0; this.col = -1; this.painted = -1; this.pending = 0;
+    for (const g of this.groups){ g.ready = false; g.drawn = false; g.cMin = -1; g.cMax = 1; }
+    this.full = true; this.bgDirty = true; this.note = null;
+    if (this.w) this.ctx.clearRect(0,0,this.w,this.h);
+  }
+
+  /* ---- ingest ---------------------------------------------------- */
+  push(vals){
+    if (!this.valid) return;
+    const n = this.valid.length, T = this.defs;
+    if (this.col < 0){ this.phase = 0; this.col = 0; }
+    else {
+      let np = this.phase + this.step;
+      if (np >= this.w) np %= this.w;
+      const nc = Math.min(n-1, Math.floor(np));
+      if (nc !== this.col){
+        const pc = this.col, dist = (nc - pc + n) % n;
+        const had = this.valid[pc];
+        // One sample can advance more than one pixel on a slow sweep, so
+        // interpolate across the gap rather than leaving a dotted trace.
+        for (let k=0;k<T.length;k++){
+          const t = T[k], pv = had ? t.last[pc] : vals[k], tv = vals[k];
+          for (let d=1; d<=dist; d++){
+            const c = (pc+d)%n, v = pv + (tv-pv)*(d/dist);
+            t.min[c] = v; t.max[c] = v; t.last[c] = v;
+          }
+        }
+        for (let d=1; d<=dist; d++) this.valid[(pc+d)%n] = 1;
+        this.col = nc;
+      }
+      this.phase = np;
+    }
+    // Blank the columns just ahead of the head: that gap is what makes it
+    // read as a sweep instead of a smear where old meets new.
+    for (let i=1;i<=this.gap;i++) this.valid[(this.col+i)%n] = 0;
+    const c = this.col;
+    if (!this.valid[c]){
+      for (let k=0;k<T.length;k++){ const t = T[k]; t.min[c] = t.max[c] = t.last[c] = vals[k]; }
+      this.valid[c] = 1;
+    } else {
+      for (let k=0;k<T.length;k++){
+        const t = T[k], v = vals[k];
+        if (v < t.min[c]) t.min[c] = v;
+        if (v > t.max[c]) t.max[c] = v;
+        t.last[c] = v;
+      }
+    }
+    this.pending++;
+  }
+
+  /* ---- scale ----------------------------------------------------- */
+  adopt(g){
+    g.dMin = g.cMin; g.dMax = g.cMax; g.drawn = true;
+    g.yScale = g.h/Math.max(1e-12, g.dMax-g.dMin);
+    this.full = true; this.bgDirty = true;
+    this.lastFull = performance.now();
+  }
+
+  updateScale(ts){
+    if (ts - this.lastScale < 90) return;
+    this.lastScale = ts;
+    const valid = this.valid, n = valid.length;
+    for (const g of this.groups){
+      let lo = Infinity, hi = -Infinity, cnt = 0;
+      for (const d of g.traces){
+        const mn = d.min, mx = d.max;
+        for (let i=0;i<n;i++){
+          if (!valid[i]) continue;
+          if (mn[i] < lo) lo = mn[i];
+          if (mx[i] > hi) hi = mx[i];
+          cnt++;
+        }
+      }
+      if (cnt < 8) continue;
+      const mid = (lo+hi)*0.5;
+      const span = Math.max(hi-lo, Math.abs(mid)*1e-6, 1e-7);
+      const tMin = lo - span*0.10, tMax = hi + span*0.10;
+      if (!g.ready){ g.cMin = tMin; g.cMax = tMax; g.ready = true; }
+      else {
+        // Expand quickly so a clipped waveform is never shown; shrink
+        // slowly so the axis does not breathe on every heartbeat.
+        g.cMin += (tMin-g.cMin)*(tMin < g.cMin ? 0.70 : 0.16);
+        g.cMax += (tMax-g.cMax)*(tMax > g.cMax ? 0.70 : 0.16);
+      }
+      if (!g.drawn){ this.adopt(g); continue; }
+      /* Everything already on the canvas was drawn against dMin/dMax, so
+         adopting a new scale costs a full repaint. Two different rules:
+
+         - if the signal has grown past the painted window it is being
+           clipped at the edge of its lane right now, which is a lie about
+           the data. Adopt immediately, whatever it costs.
+         - otherwise the axis is merely drifting. Sit still until the drift
+           would be plainly visible, and never repaint more than ~4 times a
+           second. Full repaints were 40 % of the frame cost at a 1.8 %
+           deadband; at 3 % they are a third of that and nothing looks
+           different. */
+      const painted = Math.max(1e-12, g.dMax-g.dMin);
+      if (lo < g.dMin || hi > g.dMax){ this.adopt(g); continue; }
+      const moved = Math.max(Math.abs(g.cMin-g.dMin), Math.abs(g.cMax-g.dMax));
+      if (moved > painted*0.030 && ts - this.lastFull > 260) this.adopt(g);
+    }
+  }
+
+  fmt(v){
+    if (this.unit === 'code') return Math.round(v).toString();
+    const volts = v/FS*1.2;
+    const a = Math.abs(volts);
+    if (a >= 1) return volts.toFixed(4)+' V';
+    if (a >= 0.001) return (volts*1e3).toFixed(3)+' mV';
+    return (volts*1e6).toFixed(1)+' \u00b5V';
+  }
+
+  /* ---- painting --------------------------------------------------- */
+  paintBg(){
+    const g = this.bctx, w = this.w, h = this.h;
+    if (!w || !h) return;
+    g.clearRect(0,0,w,h);
+    g.fillStyle = getCss('--void') || '#05070c';
+    g.fillRect(0,0,w,h);
+
+    const secs = this.visible/Math.max(1, stats.rate);
+    const divs = Math.max(2, Math.min(20, Math.round(secs)));
+    g.strokeStyle = 'rgba(146,176,210,.07)'; g.lineWidth = 1;
+    g.beginPath();
+    for (let i=1;i<divs;i++){ const x = Math.round(w*i/divs)+.5; g.moveTo(x,0); g.lineTo(x,h); }
+    g.stroke();
+
+    g.font = '9px "JetBrains Mono", monospace';
+    for (const gr of this.groups){
+      g.strokeStyle = 'rgba(146,176,210,.055)'; g.beginPath();
+      for (let i=1;i<4;i++){ const y = Math.round(gr.top+gr.h*i/4)+.5; g.moveTo(0,y); g.lineTo(w,y); }
+      g.stroke();
+      if (gr.top > 0){
+        g.strokeStyle = 'rgba(146,176,210,.16)'; g.beginPath();
+        const y = Math.round(gr.top-3.5)+.5; g.moveTo(0,y); g.lineTo(w,y); g.stroke();
+      }
+      if (!gr.drawn) continue;
+      const top = this.invert ? gr.dMin : gr.dMax;
+      const bot = this.invert ? gr.dMax : gr.dMin;
+      g.fillStyle = 'rgba(107,127,148,.75)'; g.textAlign = 'left';
+      g.fillText(this.fmt(top), 5, gr.top+10);
+      g.fillText(this.fmt(bot), 5, gr.top+gr.h-4);
+      if (gr.traces.length === 1){
+        const d = gr.traces[0];
+        g.fillStyle = d.rgb || (d.rgb = getCss(d.cv));
+        g.globalAlpha = .85; g.textAlign = 'right';
+        g.fillText(d.label, w-6, gr.top+10);
+        g.globalAlpha = 1; g.textAlign = 'left';
+      }
+    }
+    // Time ruler along the bottom.
+    g.fillStyle = 'rgba(107,127,148,.5)'; g.textAlign = 'right';
+    g.fillText(secs.toFixed(secs < 10 ? 1 : 0)+' s', w-6, h-4);
+    g.textAlign = 'left';
+  }
+
+  strokeCols(from, to){
+    const ctx = this.ctx, q = QUALITY[quality] || QUALITY.high, valid = this.valid;
+    ctx.lineJoin = 'round';
+    for (const gr of this.groups){
+      if (!gr.drawn) continue;
+      const s = gr.yScale, m = gr.dMin;
+      const lo = gr.top, hi = gr.top+gr.h;
+      const base = this.invert ? lo : hi, sg = this.invert ? 1 : -1;
+      for (const d of gr.traces){
+        ctx.strokeStyle = d.rgb || (d.rgb = getCss(d.cv));
+        if (q.env){
+          // Butt caps: these are 1 px vertical bars and round caps would
+          // only add rasteriser work and bleed past the column.
+          ctx.lineCap = 'butt'; ctx.globalAlpha = q.envA; ctx.lineWidth = 1;
+          ctx.beginPath();
+          const mn = d.min, mx = d.max;
+          for (let x=from;x<to;x++){
+            if (!valid[x]) continue;
+            let ya = base+sg*(mx[x]-m)*s, yb = base+sg*(mn[x]-m)*s;
+            if (ya > yb){ const t = ya; ya = yb; yb = t; }
+            if (ya < lo) ya = lo; if (yb > hi) yb = hi;
+            if (yb-ya < 1) continue;
+            ctx.moveTo(x+0.5, ya); ctx.lineTo(x+0.5, yb);
+          }
+          ctx.stroke();
+        }
+        ctx.lineCap = 'round';
+        const last = d.last;
+        const poly = (lw, al) => {
+          if (lw <= 0 || al <= 0) return;
+          ctx.globalAlpha = al; ctx.lineWidth = lw; ctx.beginPath();
+          let down = false;
+          for (let x=from;x<to;x++){
+            if (!valid[x]){ down = false; continue; }
+            let y = base+sg*(last[x]-m)*s;
+            if (y < lo) y = lo; else if (y > hi) y = hi;
+            if (!down){ ctx.moveTo(x,y); down = true; } else ctx.lineTo(x,y);
+          }
+          ctx.stroke();
+        };
+        poly(q.halo, q.haloA); poly(q.glow, q.glowA); poly(q.core, 1);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  drawCursor(){
+    const q = QUALITY[quality] || QUALITY.high;
+    if (!q.cursor || this.col < 0) return;
+    const ctx = this.ctx, w = this.cursorW, x = this.col;
+    const grad = ctx.createLinearGradient(x-w, 0, x+2, 0);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(1, 'rgba(255,255,255,.13)');
+    ctx.fillStyle = grad; ctx.fillRect(x-w, 0, w+2, this.h);
+  }
+
+  paintRange(x0, x1){
+    const n = this.valid.length;
+    const a = Math.max(0, Math.min(n, x0)), b = Math.max(0, Math.min(n, x1));
+    if (b <= a) return 0;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(a, 0, b-a, this.h); ctx.clip();
+    ctx.clearRect(a, 0, b-a, this.h);
+    // Lead in three columns so the polyline entering the band is rebuilt;
+    // the clip stops the overdraw from touching settled pixels.
+    this.strokeCols(Math.max(0, a-3), Math.min(n, b+1));
+    ctx.restore();
+    return b-a;
+  }
+
+  paintAll(){
+    const n = this.valid.length;
+    this.ctx.clearRect(0, 0, this.w, this.h);
+    this.strokeCols(0, n);
+    this.drawCursor();
+    this.full = false;
+    this.lastFull = performance.now();
+    renderStats.fullRepaints++;
+    return n;
+  }
+
+  renderFrame(ts){
+    if (!this.valid || !this.w || !this.onScreen) return 0;
+    if (this.bgDirty){ this.bgDirty = false; this.paintBg(); }
+
+    if (this.col < 0){
+      const note = emptyNote();
+      if (note !== this.note){
+        this.note = note;
+        this.ctx.clearRect(0,0,this.w,this.h);
+        drawEmpty(this.ctx, this.w, this.h, note);
+      }
+      return 0;
+    }
+    this.note = null;
+    this.updateScale(ts);
+    if (this.bgDirty){ this.bgDirty = false; this.paintBg(); }
+    let any = false;
+    for (const g of this.groups) if (g.drawn) any = true;
+    if (!any) return 0;
+
+    if (this.full){
+      const painted = this.paintAll();
+      this.painted = this.col; this.pending = 0;
+      return painted;
+    }
+    if (this.painted < 0){ this.painted = this.col; this.pending = 0; return this.paintAll(); }
+    // Nothing arrived and the head has not moved: the canvas already shows
+    // the right picture, so this frame costs nothing at all.
+    if (this.pending === 0 && this.col === this.painted) return 0;
+
+    const n = this.valid.length;
+    const trail = this.cursorW + 3;
+    let advance = this.col - this.painted;
+    if (advance < 0) advance += n;
+    if (advance > n*0.55){
+      const painted = this.paintAll(); this.painted = this.col; this.pending = 0; return painted;
+    }
+    const start = (((this.painted - trail) % n) + n) % n;
+    const length = Math.min(n, trail + advance + this.gap + 2);
+
+    let painted = 0;
+    if (start + length <= n) painted += this.paintRange(start, start+length);
+    else { painted += this.paintRange(start, n); painted += this.paintRange(0, start+length-n); }
+    this.drawCursor();
+    this.painted = this.col; this.pending = 0;
+    return painted;
+  }
+}
+
+const renderStats = { fullRepaints:0, cols:0, drawMs:0 };
+
+/* ---- the chart set ------------------------------------------------- */
+const CHARTS = [
+  { id:'Pleth', card:'#cardPleth', label:'Pleth' },
+  { id:'Ac',    card:'#cardAc',    label:'Pulsatile' },
+  { id:'Raw',   card:'#cardRaw',   label:'Raw phases' },
+  { id:'Amb',   card:'#cardAmb',   label:'Ambient' },
+  { id:'Fft',   card:'#cardFft',   label:'Spectrum' },
+];
+let chartOn = { Pleth:1, Ac:1, Raw:1, Amb:0, Fft:1 };
+try { const v = localStorage.getItem('afe4490.charts'); if (v) chartOn = JSON.parse(v); } catch(e){}
+
+let charts = [];
+function buildCharts(){
+  charts = [
+    new SweepChart('Pleth', '#cPleth', '#bPleth', [
+      { src:'redAmb', cv:'--led2', label:'LED2 \u2212 AMB (RED)' },
+      { src:'irAmb',  cv:'--led1', label:'LED1 \u2212 AMB (IR)'  },
+    ], { invertable:true }),
+    new SweepChart('Ac', '#cAc', '#bAc', [
+      { src:'redAc', cv:'--led2', label:'RED AC' },
+      { src:'irAc',  cv:'--led1', label:'IR AC'  },
+    ], { invertable:true }),
+    new SweepChart('Raw', '#cRaw', '#bRaw', [
+      { src:'red', cv:'--led2-soft', label:'LED2' },
+      { src:'ir',  cv:'--led1-soft', label:'LED1' },
+    ], {}),
+    new SweepChart('Amb', '#cAmb', '#bAmb', [
+      { src:'amb2', cv:'--led2', label:'ALED2' },
+      { src:'amb1', cv:'--led1', label:'ALED1' },
+    ], {}),
+  ];
+}
+
+function applyCharts(){
+  for (const c of CHARTS){
+    const card = $(c.card);
+    if (card) card.classList.toggle('off', !chartOn[c.id]);
+    const chip = $('#tg' + c.id);
+    if (chip) chip.classList.toggle('on', !!chartOn[c.id]);
+  }
+  /* The IntersectionObserver settles a task or two later, so a chart that
+     has just been switched back on would otherwise stay blank until then.
+     Toggling is an explicit visibility statement - act on it directly and
+     leave the observer to handle scrolling. */
+  for (const c of charts){
+    const on = !!chartOn[c.key];
+    if (on && !c.onScreen){ c.full = true; c.bgDirty = true; }
+    c.onScreen = on;
+  }
+  const row = $('#bottomRow');
+  if (row) row.classList.toggle('off', !(chartOn.Raw || chartOn.Amb || chartOn.Fft));
+  sizeDirty = true;
+  lastFft = 0;
+  try { localStorage.setItem('afe4490.charts', JSON.stringify(chartOn)); } catch(e){}
+}
+
+function applySweep(){
+  for (const c of charts) c.setSweep(windowSec);
+}
+
+/* ---- playout ------------------------------------------------------
+   USB delivers samples in bursts - eight at a time, about 67 times a
+   second - but the sweep has to advance on wall-clock time or it visibly
+   stutters at the burst rate. So the display reads out of the ring on its
+   own clock, with a small elastic buffer and a gentle rate correction,
+   the way an audio playout buffer absorbs jitter. Metrics still run off
+   the ring directly and are not delayed by any of this.
+   ------------------------------------------------------------------ */
+let dispRead = 0, playCredit = 0, playing = false;
+
+function resetPlayout(){ dispRead = buf.written; playCredit = 0; playing = false; }
+
+function playout(dtMs){
+  if (buf.written - dispRead > N) dispRead = buf.written - N;   // overrun: skip ahead
+  let avail = buf.written - dispRead;
+  const target = Math.max(20, Math.round(stats.rate*0.09));
+  if (!playing){
+    if (avail < target*1.5) return;
+    playing = true; playCredit = 0;
+  }
+  const err = (avail - target)/target;
+  const corr = Math.max(0.97, Math.min(1.04, 1 + err*0.02));
+  playCredit += stats.rate*(dtMs/1000)*corr;
+  let take = Math.min(Math.floor(playCredit), avail, Math.ceil(stats.rate*0.12));
+  if (take <= 0) return;
+  playCredit -= take;
+  const vals = playout.vals || (playout.vals = new Float64Array(2));
+  while (take-- > 0){
+    const i = dispRead % N;
+    for (const c of charts){
+      if (!chartOn[c.key]) continue;
+      vals[0] = buf[c.defs[0].src][i];
+      vals[1] = buf[c.defs[1].src][i];
+      c.push(vals);
+    }
+    dispRead++;
+  }
+  if (buf.written === dispRead) playing = false;
+}
+
+/* ---- frame pacing -------------------------------------------------
+   requestAnimationFrame is clamped to the compositor's vsync, so the fps
+   ceiling is the refresh rate of the monitor the window sits on and no
+   JavaScript can raise it. What can be controlled is whether every one
+   of those vsyncs is met, so the HUD reports the panel rate actually
+   observed, the achieved fps, the p99 frame interval, and the count of
+   intervals long enough to be a missed vsync. A steady 60 with zero
+   misses looks smoother than a ragged 110.
+   ------------------------------------------------------------------ */
+const FRN = 180;
+const frIv = new Float32Array(FRN), frSort = new Float32Array(FRN);
+let frCount = 0, frIdx = 0, missTotal = 0, missWin = 0, panelHz = 0, lastVsync = 0;
+let hudLast = 0, hudSpark = 0;
+const PANELS = [50,60,75,90,100,120,144,165,180,240,360];
+
+function pace(now){
+  if (lastVsync){
+    const iv = now - lastVsync;
+    if (iv > 0 && iv < 400){
+      frIv[frIdx] = iv; frIdx = (frIdx+1)%FRN;
+      if (frCount < FRN) frCount++;
+      const budget = panelHz ? 1000/panelHz : 16.7;
+      if (iv > budget*1.55){ missTotal++; missWin++; }
+    }
+  }
+  lastVsync = now;
+}
+
+function framePct(f){
+  if (!frCount) return 0;
+  frSort.set(frIv.subarray(0, frCount));
+  const v = frSort.subarray(0, frCount);
+  v.sort();
+  return v[Math.min(frCount-1, Math.floor((frCount-1)*f))];
+}
+
+function classifyPanel(medMs){
+  if (!(medMs > 0)) return 0;
+  const hz = 1000/medMs;
+  let best = 0, bestErr = Infinity;
+  for (const p of PANELS){ const e = Math.abs(p-hz)/p; if (e < bestErr){ bestErr = e; best = p; } }
+  return bestErr < 0.09 ? best : Math.round(hz);
+}
+
+function setCls(el, cls){ if (el && el.className !== cls) el.className = cls; }
+
+function hud(now){
+  if (now - hudSpark >= 90){ hudSpark = now; drawSpark(); }
+  if (now - hudLast < 260) return;
+  hudLast = now;
+  if (frCount > 24) panelHz = classifyPanel(framePct(0.50));
+  const p99 = framePct(0.99);
+  const budget = panelHz ? 1000/panelHz : 16.7;
+
+  $('#sbFps').textContent = stats.fps;
+  const pe = $('#sbP99');
+  pe.textContent = p99 ? p99.toFixed(1)+' ms' : '\u2014';
+  setCls(pe, p99 <= budget*1.15 ? 'good' : p99 <= budget*1.6 ? 'warn' : 'bad');
+  const me = $('#sbMiss');
+  me.textContent = String(missWin);
+  setCls(me, missWin === 0 ? 'good' : missWin < 4 ? 'warn' : 'bad');
+  $('#sbPanel').textContent = panelHz ? panelHz+' Hz' : '\u2014';
+  $('#sbCols').textContent = renderStats.cols;
+  missWin = 0;
+}
+
+function drawSpark(){
+  const cv = $('#sbSpark'); if (!cv || !frCount) return;
+  const g = cv.getContext('2d');
+  const w = cv.width, h = cv.height;
+  g.clearRect(0,0,w,h);
+  const budget = panelHz ? 1000/panelHz : 16.7;
+  const n = Math.min(frCount, w);
+  const full = budget*2.4;
+  for (let i=0;i<n;i++){
+    const idx = (frIdx - n + i + FRN*2) % FRN;
+    const v = Math.min(full, frIv[idx]);
+    const bh = Math.max(1, (v/full)*h);
+    g.fillStyle = frIv[idx] > budget*1.55 ? '#ff6b7d'
+                : frIv[idx] > budget*1.15 ? '#f5b544' : 'rgba(63,224,176,.6)';
+    g.fillRect(i*(w/n), h-bh, Math.max(1, w/n - 0.5), bh);
+  }
+}
+
+/* Pulse rate and SpO2 both integrate over several seconds, so recomputing
+   them on every animation frame buys nothing. Cache, refresh 4x a second. */
+const metrics = { hr:null, ox:null, at:0 };
+function refreshMetrics(now){
+  if (now - metrics.at < 250) return;
+  metrics.at = now;
+  metrics.hr = estimateHr();
+  metrics.ox = estimateSpo2();
+}
+
+/* ---- the loop ------------------------------------------------------ */
+let lastDraw = 0, lastText = 0, lastFft = 0, sweepRate = 0;
+
+function render(ts){
+  requestAnimationFrame(render);
+  const now = ts || performance.now();
+  pace(now);
+  if (fpsCap && now - lastDraw < 1000/fpsCap - 1) return;
+  /* A backgrounded tab can wake with minutes on the clock, and a caller
+     driving render() by hand can hand it a timestamp that runs backwards.
+     Either way the elapsed time is not usable: fall back to one frame and
+     let the playout buffer re-converge. */
+  let dt = lastDraw ? now - lastDraw : 16;
+  if (!(dt > 0) || dt > 200){ dt = 16; resetPlayout(); }
+  lastDraw = now;
+
+  stats.frames++;
+  if (now - stats.lastSec >= 1000){
+    stats.fps = Math.round(stats.frames*1000/(now - stats.lastSec));
+    stats.frames = 0; stats.lastSec = now; stats.sinceSec = 0;
+  }
+
+  if (viewMode === 'capture'){ capTick(now); hud(now); sizeDirty = false; return; }
+
+  if (sizeDirty) for (const c of charts) c.resize();
+  if (sweepRate !== stats.rate){ sweepRate = stats.rate; applySweep(); }
+
+  playout(dt);
+
+  let cols = 0;
+  for (const c of charts) if (chartOn[c.key]) cols += c.renderFrame(now);
+  renderStats.cols = cols;
+
+  if (chartOn.Fft && now - lastFft >= 125){ lastFft = now; drawFft(); }
+  drawTiming();
+
+  refreshMetrics(now);
+  if (now - lastText >= 100){ lastText = now; textUpdate(); }
+  hud(now);
+  sizeDirty = false;
+}
+
+function textUpdate(){
+  const hr = metrics.hr, ox = metrics.ox;
+  setVital('#numHr', '#vHr', hr ? hr.bpm.toFixed(0) : null, 'bpm');
+  $('#subHr').textContent = hr ? `coherence ${(hr.quality*100).toFixed(0)} %` : 'searching\u2026';
+  setVital('#numSpo2', '#vSpo2', ox ? ox.spo2.toFixed(1) : null, '%');
+  $('#subSpo2').textContent = ox ? `R = ${ox.R.toFixed(3)}` : 'R = \u2014';
+  setVital('#numPi', '#vPi', ox ? ox.pi.toFixed(2) : null, '%');
+
+  const headroom = 100*Math.max(Math.abs(dcRed), Math.abs(dcIr))/FS;
+  setVital('#numHead','#vHead', buf.count>10 ? headroom.toFixed(1) : null, '%FS');
+  $('#vHead').style.setProperty('--vc',
+      headroom>85 ? 'var(--bad)' : (headroom>25 && headroom<75) ? 'var(--ok)' : 'var(--warn)');
+
+  $('#roRed').textContent = buf.count ? fmtV(at(buf.redAmb,0)) : '\u2014';
+  $('#roIr').textContent  = buf.count ? fmtV(at(buf.irAmb,0))  : '\u2014';
+  if (chartOn.Amb)
+    $('#roAmb').textContent = buf.count
+      ? `ALED2 ${fmtV(at(buf.amb2,0))} \u00b7 ALED1 ${fmtV(at(buf.amb1,0))}` : '\u2014';
+  $('#roAc').textContent  = ox ? (100*ox.ppIr/FS).toFixed(3)+' %FS' : '\u2014';
+  $('#roRaw').textContent = buf.count ? `RED ${fmtV(at(buf.red,0))} \u00b7 IR ${fmtV(at(buf.ir,0))}` : '\u2014';
+
+  $('#sbRx').textContent = link.samples;
+  $('#sbFrames').textContent = link.frames;
+  $('#sbRate').textContent = stats.rate;
+  $('#sbCrc').textContent = link.crcErr;
+}
+
+
+
+function setVital(numSel, cardSel, value, unit){
+  const el = $(numSel);
+  el.innerHTML = (value===null||value===undefined) ? '—<small>'+unit+'</small>'
+                                                  : value+'<small>'+unit+'</small>';
+  $(cardSel).classList.toggle('stale', value===null||value===undefined);
+}
+const fmtV = c => (c/FS*1.2).toFixed(4)+' V';
+const cssCache = {};
+function getCss(v){ return cssCache[v] || (cssCache[v] = getComputedStyle(document.documentElement).getPropertyValue(v).trim()); }
+
+function drawFft(){
+  const {g,w,h} = fitCanvas($('#cFft'));
+  g.clearRect(0,0,w,h); grid(g,w,h,4,6);
+  if (buf.count < 2){ drawEmpty(g, w, h, emptyNote()); $('#roFft').textContent='\u2014'; return; }
+  const M = 512;
+  // ~50 Hz is plenty of bandwidth for a PPG, but never ask for more
+  // history than the ring actually holds.
+  const dsf = Math.max(1, Math.min(Math.floor(stats.rate/50), Math.floor(buf.count/M)));
+  if (buf.count < M){ $('#roFft').textContent='\u2014'; return; }
+  const re = new Float32Array(M), im = new Float32Array(M);
+  for (let i=0;i<M;i++){
+    const w0 = 0.5 - 0.5*Math.cos(2*Math.PI*i/(M-1));      // Hann
+    re[i] = at(buf.irAc, (M-1-i)*dsf) * w0;
+  }
+  fft(re, im);
+  const fsEff = stats.rate/dsf;
+  const bins = M/2, maxHz = 6, nShow = Math.min(bins, Math.ceil(maxHz*M/fsEff));
+  let peak = 0, peakBin = 0, mags = new Float32Array(nShow);
+  for (let i=1;i<nShow;i++){
+    mags[i] = Math.hypot(re[i], im[i]);
+    if (mags[i] > peak){ peak = mags[i]; peakBin = i; }
+  }
+  if (peak <= 0){ $('#roFft').textContent='—'; return; }
+  g.fillStyle = getCss('--violet');
+  const bw = w/nShow;
+  for (let i=1;i<nShow;i++){
+    const bh = (mags[i]/peak)*(h-16);
+    g.globalAlpha = i===peakBin ? 1 : .55;
+    g.fillRect(i*bw, h-8-bh, Math.max(1,bw-1), bh);
+  }
+  g.globalAlpha = 1;
+  const pk = peakBin*fsEff/M;
+  $('#roFft').textContent = pk.toFixed(2)+' Hz · '+(pk*60).toFixed(0)+' bpm';
+  g.fillStyle='rgba(107,127,148,.75)'; g.font='9px "JetBrains Mono", monospace';
+  for (let hz=1; hz<=maxHz; hz++){ const x = hz*M/fsEff*bw; if(x<w-14) g.fillText(hz+'Hz', x-8, h-1); }
+}
+
+/* ---- phase map ---------------------------------------------------- */
+let activeTab = 'acq';
+function drawTiming(){
+  if (activeTab !== 'timing') return;
+  const cv = $('#cTiming');
+  if (!cv.clientWidth) return;
+  const {g,w,h} = fitCanvas(cv);
+  g.clearRect(0,0,w,h);
+  const T = (regValues[0x1D]||7999) + 1;
+  const pad = 6, plotW = w - 66;
+  const X = c => pad + 52 + (c/T)*plotW;
+
+  const rows = [
+    ['LED2 drive', 0x03,0x04, '--led2'], ['LED1 drive', 0x09,0x0A, '--led1'],
+    ['S LED2',     0x01,0x02, '--led2'], ['S ALED2',    0x05,0x06, '--amb'],
+    ['S LED1',     0x07,0x08, '--led1'], ['S ALED1',    0x0B,0x0C, '--amb'],
+    ['C LED2',     0x0D,0x0E, '--led2-soft'], ['C ALED2', 0x0F,0x10, '--amb'],
+    ['C LED1',     0x11,0x12, '--led1-soft'], ['C ALED1', 0x13,0x14, '--amb'],
+    ['ADC rst 0',  0x15,0x16, '--warn'], ['ADC rst 1',  0x17,0x18, '--warn'],
+    ['ADC rst 2',  0x19,0x1A, '--warn'], ['ADC rst 3',  0x1B,0x1C, '--warn'],
+  ];
+  const rh = (h - 20) / rows.length;
+  g.font = '9px "JetBrains Mono", monospace';
+
+  // quarter markers
+  g.strokeStyle = 'rgba(146,176,210,.16)'; g.setLineDash([3,3]);
+  for (let q=0;q<=4;q++){ const x=Math.round(X(q*T/4))+.5; g.beginPath(); g.moveTo(x,4); g.lineTo(x,h-14); g.stroke(); }
+  g.setLineDash([]);
+
+  rows.forEach((r,i)=>{
+    const y = 6 + i*rh;
+    g.fillStyle = 'rgba(107,127,148,.85)';
+    g.fillText(r[0], pad, y + rh*0.72);
+    const a = regValues[r[1]], b = regValues[r[2]];
+    if (a===undefined||b===undefined) return;
+    g.fillStyle = getCss(r[3]);
+    const x0 = X(a), x1 = X(b+1);
+    g.fillRect(x0, y+1, Math.max(1.5, x1-x0), rh-3);
+  });
+  g.fillStyle='rgba(107,127,148,.7)';
+  for (let q=0;q<=4;q++) g.fillText((q*25)+'%', X(q*T/4)-8, h-3);
+}
+
+/* ==================================================================
+   5. REGISTER UI
+   ================================================================== */
+/* PRPCOUNT is written by the firmware at boot and is never legitimately
+   zero, so reading zero back is proof the bus carried nothing. */
+function linkHealth(){
+  if (regValues[0x1D] === undefined) return 'unknown';
+  return (regValues[0x1D] === 0) ? 'dead' : 'ok';
+}
+
+function showBanner(kind, title, text, actLabel, actFn){
+  const b = $('#banner');
+  if (!kind){ b.classList.remove('on'); return; }
+  b.classList.add('on');
+  b.classList.toggle('info', kind === 'info');
+  $('#bannerIcon').innerHTML = kind === 'info' ? '&#9432;' : '&#9888;';
+  $('#bannerTitle').textContent = title;
+  $('#bannerText').textContent = text;
+  const act = $('#bannerAct');
+  if (actLabel){ act.style.display=''; act.textContent = actLabel; act.onclick = actFn; }
+  else act.style.display = 'none';
+}
+
+function refreshHealthBanner(){
+  const h = linkHealth();
+  if (h === 'dead'){
+    showBanner('bad', 'AFE4490 is not answering on SPI',
+      'Every register reads 000000, so nothing is coming back on MISO. '
+      + 'This is a wiring or power fault, not a settings problem — the '
+      + 'pin probe will say which.',
+      'Run pin probe', ()=>{ $('.tab[data-p=diag]').click(); $('#btnPintest').click(); });
+  } else if (h === 'ok' && !streaming){
+    showBanner('info', 'Link healthy — not streaming',
+      'Registers read back correctly. Press Start to begin acquisition.',
+      'Start', ()=>$('#btnStream').click());
+  } else {
+    showBanner(null);
+  }
+}
+
+const regValues = {};
+let selectedReg = 0x21, regRenderQueued = false;
+
+function scheduleRegRender(){
+  if (regRenderQueued) return;
+  regRenderQueued = true;
+  requestAnimationFrame(()=>{
+    regRenderQueued = false; renderRegTable(); syncControls(); refreshHealthBanner();
+  });
+}
+
+async function readAllRegisters(){
+  await send('REG?', /^REG:END$/, 5000);
+  scheduleRegRender();
+}
+
+function renderRegTable(){
+  const body = $('#regBody');
+  body.innerHTML = '';
+  for (const r of REGS){
+    const v = regValues[r.a];
+    const tr = document.createElement('tr');
+    if (r.a === selectedReg) tr.className = 'sel';
+    tr.innerHTML = `<td class="addr">${hx(r.a,2)}</td><td class="nm">${r.n}</td>`+
+      `<td class="hex ${r.acc==='R'?'ro':''}">${v===undefined?'······':hx(v,6)}</td>`;
+    tr.onclick = ()=>{ selectedReg = r.a; renderRegTable(); };
+    body.appendChild(tr);
+  }
+  renderFields();
+  renderTimingList();
+}
+
+function renderFields(){
+  const r = REG_BY_ADDR[selectedReg];
+  const host = $('#regFields');
+  host.innerHTML = '';
+  if (!r) return;
+  const v = regValues[r.a] || 0;
+
+  const hd = document.createElement('div');
+  hd.innerHTML = `<div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">
+      <span class="mono" style="color:var(--accent);font-weight:600">${hx(r.a,2)} ${r.n}</span>
+      <span class="pill" style="padding:2px 7px">${r.acc}</span>
+      <input type="text" id="regHex" class="mono" style="width:96px;margin-left:auto;text-align:right"
+             value="${hx(v,6)}" ${r.acc==='R'?'disabled':''}>
+      <button class="btn sm" id="btnWriteReg" ${r.acc==='R'?'disabled':''}>Write</button>
+    </div><p class="hint">${r.d}</p>`;
+  host.appendChild(hd);
+
+  for (const f of (r.f||[])){
+    const [msb, lsb, name, desc, opts] = f;
+    const width = msb - lsb + 1;
+    const val = (v >>> lsb) & ((1 << width) - 1);
+    const row = document.createElement('div');
+    row.className = 'fld';
+    const left = document.createElement('div');
+    left.innerHTML = `<div class="fn">${name}</div><div class="fb">D[${msb}:${lsb}] = ${val}</div>`;
+    row.appendChild(left);
+
+    let ctl;
+    if (opts){
+      ctl = document.createElement('select');
+      opts.forEach((o,i)=>{ const op=document.createElement('option'); op.value=i; op.textContent=`${i} — ${o}`; ctl.appendChild(op); });
+      ctl.value = val;
+    } else if (width === 1){
+      ctl = document.createElement('input'); ctl.type='checkbox'; ctl.checked = !!val;
+      ctl.style.width='16px'; ctl.style.height='16px'; ctl.style.accentColor='var(--accent)';
+    } else {
+      ctl = document.createElement('input'); ctl.type='number'; ctl.min=0; ctl.max=(1<<width)-1; ctl.value=val;
+    }
+    ctl.disabled = (r.acc === 'R');
+    ctl.onchange = ()=>{
+      const nv = (ctl.type === 'checkbox') ? (ctl.checked?1:0) : (+ctl.value|0);
+      const mask = ((1 << width) - 1) << lsb;
+      const out = ((v & ~mask) | ((nv << lsb) & mask)) >>> 0;
+      writeReg(r.a, out & 0xFFFFFF);
+    };
+    row.appendChild(ctl);
+    if (desc){ const d=document.createElement('div'); d.className='fd'; d.textContent=desc; row.appendChild(d); }
+    host.appendChild(row);
+  }
+
+  const hex = $('#regHex'), wb = $('#btnWriteReg');
+  if (wb) wb.onclick = ()=>{ const nv = parseInt(hex.value,16); if(!isNaN(nv)) writeReg(r.a, nv & 0xFFFFFF); };
+  if (hex) hex.onkeydown = e => { if (e.key==='Enter' && wb) wb.click(); };
+}
+
+function renderTimingList(){
+  const host = $('#timingList');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const [a,n,d] of TIMING){
+    const v = regValues[a];
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label style="flex:0 0 150px" title="${d}">${n}</label>`;
+    const inp = document.createElement('input');
+    inp.type='number'; inp.min=0; inp.max=65535; inp.value = (v===undefined?'':v);
+    inp.className='grow';
+    inp.onchange = ()=> writeReg(a, (+inp.value)&0xFFFF);
+    row.appendChild(inp);
+    const us = document.createElement('span');
+    us.className='val';
+    us.textContent = v===undefined ? '—' : (v/4).toFixed(1)+' µs';
+    row.appendChild(us);
+    host.appendChild(row);
+  }
+}
+
+async function writeReg(addr, value){
+  const r = await send(`W:${hx(addr,2)},${hx(value,6)}`, /^(ACK:W:|ERR:)/);
+  const m = r && /^ACK:W:([0-9A-F]{2})=([0-9A-F]{6})$/i.exec(r);
+  if (m) regValues[parseInt(m[1],16)] = parseInt(m[2],16);
+  else regValues[addr] = value;
+  scheduleRegRender();
+}
+const hx = (v,n) => (v>>>0).toString(16).toUpperCase().padStart(n,'0');
+
+/* ==================================================================
+   6. CONTROL PANELS  (write through to registers)
+   ================================================================== */
+function fill(sel, opts, values){
+  const el = $(sel); if (!el) return;
+  el.innerHTML = '';
+  opts.forEach((o,i)=>{ const op=document.createElement('option'); op.value = values?values[i]:i; op.textContent=o; el.appendChild(op); });
+}
+fill('#selRf', RF_OPTS); fill('#selRf1', RF_OPTS);
+fill('#selCf', CF_OPTS); fill('#selCf1', CF_OPTS);
+fill('#selStg2', STG2_OPTS);
+
+/* Pull the panel widgets back in line whenever a register changes, so the
+   UI can never drift from silicon regardless of who wrote it. */
+let syncing = false;
+function syncControls(){
+  syncing = true;
+  const ag = regValues[0x21], tg = regValues[0x20], lc = regValues[0x22], c2 = regValues[0x23], c1 = regValues[0x1E];
+
+  if (ag !== undefined){
+    $('#selRf').value  = ag & 7;
+    $('#selCf').value  = (ag >> 3) & 0x1F;
+    $('#selStg2').value= (ag >> 8) & 7;
+    $('#ckStg2').checked = !!(ag & (1<<14));
+    $('#selFltr').value  = (ag >> 15) & 1;
+    $('#inAmb').value    = (ag >> 16) & 0xF;
+    $('#vAmb').textContent = ((ag>>16)&0xF) + ' µA';
+    const rf = RF_OHMS[ag & 7], cf = cfPf((ag>>3)&0x1F);
+    $('#vRc').textContent = `${RF_OPTS[ag & 7]} \u00d7 ${cf} pF = ${(rf*cf*1e-12*1e6).toFixed(2)} \u00b5s`;
+    /* The TIA is differential, so its 1 V full-scale output corresponds to
+       I = 1/(2*RF). That reproduces the datasheet I_IN_FS table exactly:
+       500 k -> 1 uA, 100 k -> 5 uA, 10 k -> 50 uA. Stage 2 gain, when on,
+       shrinks the usable input range by the same factor. */
+    const stg2 = (ag & (1<<14)) ? STG2_LIN[(ag >> 8) & 7] : 1;
+    $('#vFsPd').textContent = rf
+      ? `± ${(0.5/rf*1e6/stg2).toFixed(2)} µA` + (stg2 > 1 ? ` (stage 2 ×${stg2})` : '')
+      : '—';
+  }
+  if (tg !== undefined){
+    $('#selRf1').value = tg & 7;
+    $('#selCf1').value = (tg >> 3) & 0x1F;
+    $('#ckSep').checked = !!(tg & (1<<15));
+    $('#sepBox').style.display = (tg & (1<<15)) ? 'block' : 'none';
+  }
+  if (lc !== undefined && c2 !== undefined){
+    const txref = (c2 >> 17) & 3, range = (lc >> 16) & 3;
+    const fs = LED_FS[txref][range];
+    fill('#selRange', [0,1,2,3].map(i=> LED_FS[txref][i] ? `${LED_FS[txref][i]} mA full scale` : 'transmitter off'));
+    $('#selRange').value = range;
+    $('#selTxref').value = txref;
+    $('#inLed1').value = (lc >> 8) & 0xFF;
+    $('#inLed2').value = lc & 0xFF;
+    $('#vLed1').textContent = (((lc>>8)&0xFF)/256*fs).toFixed(2)+' mA';
+    $('#vLed2').textContent = ((lc&0xFF)/256*fs).toFixed(2)+' mA';
+    $('#selBridge').value = (c2 >> 11) & 1;
+    $('#ckPdnTx').checked  = !!(c2 & 4);
+    $('#ckPdnRx').checked  = !!(c2 & 2);
+    $('#ckPdnAfe').checked = !!(c2 & 1);
+  }
+  if (c1 !== undefined){
+    const nv = c1 & 0xFF;
+    $('#inNumav').value = nv;
+    $('#vNumav').textContent = (nv+1)+'×';
+  }
+  /* PRPCOUNT is only meaningful in its documented 800..64000 range. When
+     the bus is dead it reads 0, and 4 MHz / (0 + 1) would claim a 4 MHz
+     sample rate - which is exactly the nonsense the status bar used to
+     print. Leave the rate alone unless the register is credible. */
+  const prp = regValues[0x1D];
+  if (prp !== undefined && prp >= 800 && prp <= 64000){
+    const prf = Math.round(4e6 / (prp + 1));
+    $('#inPrf').value = prf;
+    const r = prf / Math.max(1, +$('#inDec').value);
+    if (r !== stats.rate){ stats.rate = r; retune(r); }
+    $('#vDec').textContent = stats.rate.toFixed(0)+' Hz';
+  }
+  syncing = false;
+}
+
+function bitWrite(addr, msb, lsb, value){
+  const cur = regValues[addr] || 0;
+  const width = msb - lsb + 1, mask = ((1<<width)-1) << lsb;
+  writeReg(addr, ((cur & ~mask) | ((value << lsb) & mask)) >>> 0 & 0xFFFFFF);
+}
+
+// ---- Rx panel --------------------------------------------------------
+$('#selRf').onchange  = e => { if(!syncing) bitWrite(0x21,2,0,+e.target.value); };
+$('#selCf').onchange  = e => { if(!syncing) bitWrite(0x21,7,3,+e.target.value); };
+$('#selRf1').onchange = e => { if(!syncing) bitWrite(0x20,2,0,+e.target.value); };
+$('#selCf1').onchange = e => { if(!syncing) bitWrite(0x20,7,3,+e.target.value); };
+$('#ckSep').onchange  = e => { if(!syncing) bitWrite(0x20,15,15,e.target.checked?1:0); };
+$('#selStg2').onchange= e => { if(!syncing) send(`STAGE2:${$('#ckStg2').checked?1:0},${+e.target.value}`, /^(ACK:STAGE2|ERR:)/).then(readTouched); };
+$('#ckStg2').onchange = e => { if(!syncing) send(`STAGE2:${e.target.checked?1:0},${+$('#selStg2').value}`, /^(ACK:STAGE2|ERR:)/).then(readTouched); };
+$('#inAmb').oninput   = e => { $('#vAmb').textContent = e.target.value+' µA'; };
+$('#inAmb').onchange  = e => { if(!syncing) bitWrite(0x21,19,16,+e.target.value); };
+$('#selFltr').onchange= e => { if(!syncing) bitWrite(0x21,15,15,+e.target.value); };
+
+// ---- Tx panel --------------------------------------------------------
+function ledPreview(){
+  const txref = +$('#selTxref').value, range = +($('#selRange').value||0);
+  const fs = LED_FS[txref][range] || 0;
+  $('#vLed1').textContent = (+$('#inLed1').value/256*fs).toFixed(2)+' mA';
+  $('#vLed2').textContent = (+$('#inLed2').value/256*fs).toFixed(2)+' mA';
+}
+$('#inLed1').oninput = ledPreview;
+$('#inLed2').oninput = ledPreview;
+const pushLeds = ()=> { if(!syncing) send(`LED:${+$('#inLed1').value},${+$('#inLed2').value}`, /^(ACK:LED|ERR:)/).then(readTouched); };
+$('#inLed1').onchange = pushLeds;
+$('#inLed2').onchange = pushLeds;
+$('#selRange').onchange = e => { if(!syncing) send(`LEDRANGE:${+e.target.value}`, /^(ACK:LEDRANGE|ERR:)/).then(readTouched); };
+$('#selTxref').onchange = e => { if(!syncing) send(`TXREF:${+e.target.value}`, /^(ACK:TXREF|ERR:)/).then(readTouched); };
+$('#selBridge').onchange= e => { if(!syncing) bitWrite(0x23,11,11,+e.target.value); };
+const pushPdn = ()=> { if(!syncing) send(`PDN:${$('#ckPdnAfe').checked?1:0},${$('#ckPdnRx').checked?1:0},${$('#ckPdnTx').checked?1:0}`, /^(ACK:PDN|ERR:)/).then(readTouched); };
+$('#ckPdnTx').onchange = pushPdn; $('#ckPdnRx').onchange = pushPdn; $('#ckPdnAfe').onchange = pushPdn;
+
+async function readTouched(){
+  for (const a of [0x20,0x21,0x22,0x23,0x1E]){
+    const r = await send('R:'+hx(a,2), /^REG:/);
+    const m = r && /^REG:([0-9A-F]{2})=([0-9A-F]{6})$/i.exec(r);
+    if (m) regValues[parseInt(m[1],16)] = parseInt(m[2],16);
+  }
+  scheduleRegRender();
+}
+
+// ---- Acquire panel ---------------------------------------------------
+$('#inDuty').oninput = e => $('#vDuty').textContent = e.target.value+' %';
+$('#inSettle').oninput = e => $('#vSettle').textContent = (+e.target.value/4).toFixed(1)+' µs';
+$('#inRst').oninput = e => $('#vRst').textContent = (+e.target.value/4).toFixed(1)+' µs';
+$('#inNumav').oninput = e => $('#vNumav').textContent = (+e.target.value+1)+'×';
+
+$('#btnApplyPrf').onclick = async ()=>{
+  await send(`PRF:${+$('#inPrf').value},${+$('#inDuty').value},${+$('#inSettle').value},${+$('#inRst').value}`,
+             /^(ACK:PRF|ERR:)/, 6000);
+  if (!$('#ckNumavAuto').checked) await send(`NUMAV:${+$('#inNumav').value}`, /^(ACK:NUMAV|ERR:)/);
+  else await send('NUMAV:AUTO', /^(ACK:NUMAV|ERR:)/);
+  await readAllRegisters();
+  resetBuffers();
+};
+$('#ckNumavAuto').onchange = e => { $('#inNumav').disabled = e.target.checked; };
+$('#inNumav').onchange = e => { if(!$('#ckNumavAuto').checked) send(`NUMAV:${+e.target.value}`, /^(ACK:NUMAV|ERR:)/).then(readTouched); };
+$('#selFmt').onchange = e => send(`FMT:${e.target.value}`, /^(ACK:FMT|ERR:)/);
+$('#inDec').onchange = async e => {
+  await send(`DEC:${+e.target.value}`, /^(ACK:DEC|ERR:)/);
+  stats.rate = Math.round((+$('#inPrf').value) / Math.max(1,+e.target.value));
+  retune(stats.rate); resetBuffers();
+  $('#vDec').textContent = stats.rate+' Hz';
+};
+$('#selSpi').onchange = e => send(`SPI:SET:${+e.target.value}`, /^(ACK:SPI:\d|ERR:)/);
+$('#selDrive').onchange = e => send(`SPI:DRIVE:${+e.target.value}`, /^(ACK:SPI:DRIVE|ERR:)/);
+$('#btnDefaults').onclick = async ()=>{ await send('DEFAULTS', /^(ACK:DEFAULTS|ERR:)/, 8000); await readAllRegisters(); resetBuffers(); };
+$('#btnResetChip').onclick = async ()=>{ await send('RESET', /^(ACK:RESET|ERR:)/, 8000); await readAllRegisters(); resetBuffers(); };
+$('#btnAgc').onclick = async ()=>{
+  const b = $('#btnAgc'); b.disabled = true; b.textContent = 'Tuning…';
+  await send('AGC:50', /^(ACK:AGC|ERR:)/, 20000);
+  await readAllRegisters(); resetBuffers();
+  b.disabled = false; b.textContent = 'Auto gain';
+};
+
+// ---- Diag panel ------------------------------------------------------
+$('#btnDiag').onclick = async ()=>{
+  $('#diagOut').innerHTML = '<p class="hint">Running\u2026</p>';
+  await send('DIAG', /^DIAG:(OK|FAULT)/, 8000);
+  setTimeout(()=>{
+    const v = regValues[0x30];
+    const r = REG_BY_ADDR[0x30];
+    const bad = (r.f||[]).filter(f => v !== undefined && ((v>>>f[1])&1));
+    $('#diagOut').innerHTML = bad.length
+      ? bad.map(f=>`<div class="pill bad" style="margin:3px 3px 0 0">${f[2]}</div>`).join('')
+      : '<div class="pill good">no faults latched</div>';
+  }, 400);
+  await send('R:30', /^REG:30=/);
+};
+/* The first question on a dead link is whether anything is wired up at
+   all. PINTEST answers it from the pins themselves, without a scope. */
+$('#btnPintest').onclick = async ()=>{
+  $('#diagOut').innerHTML = '<p class="hint">Probing…</p>';
+  const v = await send('PINTEST', /^PIN:VERDICT=/, 8000);
+  if (!v){ $('#diagOut').innerHTML = '<div class="pill bad">no reply</div>'; return; }
+  const body = v.slice('PIN:VERDICT='.length);
+  const ok = body.startsWith('OK');
+  $('#diagOut').innerHTML = `<div class="pill ${ok?'good':'bad'}">${body.split(' - ')[0]}</div>`
+    + `<p class="hint" style="margin-top:7px">${body.split(' - ').slice(1).join(' - ') || 'Register readback and ADC_RDY are both healthy.'}</p>`;
+};
+$('#btnSpitest').onclick = async ()=>{
+  const b = $('#btnSpitest');
+  b.disabled = true;
+  $('#diagOut').innerHTML = '<p class="hint">Sweeping every SPIM clock\u2026</p>';
+  const rows = [];
+  lineTap = l => {
+    const m = /^SPITEST:(\d+)=(\d+)\/(\d+),(PASS|FAIL)$/.exec(l);
+    if (m) rows.push({ hz:+m[1], err:+m[2], of:+m[3], pass:m[4]==='PASS' });
+  };
+  const end = await send('SPI:TEST', /^SPITEST:END:/, 25000);
+  lineTap = null;
+  b.disabled = false;
+
+  const kv = {};
+  if (end) end.slice('SPITEST:END:'.length).split(',').forEach(x=>{
+    const i = x.indexOf('='); kv[x.slice(0,i)] = x.slice(i+1);
+  });
+  const fmt = hz => hz >= 1e6 ? (hz/1e6)+' MHz' : (hz/1e3)+' kHz';
+  const chips = rows.map(r =>
+    `<div class="pill ${r.pass?'good':'bad'}" style="margin:3px 3px 0 0">${fmt(r.hz)} · ${r.err}/${r.of}</div>`).join('');
+  const best = +kv.BEST || 0;
+  $('#diagOut').innerHTML = chips + (best
+    ? `<p class="hint" style="margin-top:8px">Fastest error-free clock <b>${fmt(best)}</b>.
+       Left running at <b>${fmt(+kv.ACTIVE)}</b> — one step down, so the link keeps
+       working when a wire moves. Drive ${kv.DRIVE}.</p>`
+    : `<p class="hint" style="margin-top:8px">Nothing passed at any clock. That is a
+       wiring or power fault rather than a speed problem — run <b>Pin probe</b>.</p>`);
+  await readAllRegisters();
+};
+
+$('#btnSelftest').onclick = async ()=>{
+  const r = await send('SELFTEST:256', /^(ACK:SELFTEST|ERR:)/, 8000);
+  $('#diagOut').innerHTML = `<div class="pill ${/PASS/.test(r||'')?'good':'bad'}">${r||'no reply'}</div>`;
+};
+$('#btnSend').onclick = ()=>{ const v = $('#inCmd').value.trim(); if (v){ send(v); $('#inCmd').value=''; } };
+$('#inCmd').onkeydown = e => { if (e.key==='Enter') $('#btnSend').click(); };
+$('#btnClearLog').onclick = ()=> $('#log').innerHTML = '';
+$('#btnStatus').onclick = ()=> send('STATUS?');
+
+// ---- register panel buttons -----------------------------------------
+$('#btnReadAll').onclick = readAllRegisters;
+$('#btnSaveCfg').onclick = ()=>{
+  const out = { device:'AFE4490', saved:new Date().toISOString(), registers:{} };
+  for (const r of REGS) if (r.acc !== 'R' && regValues[r.a] !== undefined)
+    out.registers[hx(r.a,2)] = hx(regValues[r.a],6);
+  const blob = new Blob([JSON.stringify(out,null,2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'afe4490_config_'+Date.now()+'.json';
+  a.click();
+};
+$('#btnLoadCfg').onclick = ()=> $('#fileCfg').click();
+$('#fileCfg').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try{
+    const cfg = JSON.parse(await f.text());
+    for (const [k,v] of Object.entries(cfg.registers||{})){
+      const a = parseInt(k,16);
+      if (a >= 0x01 && a <= 0x29) await writeReg(a, parseInt(v,16));
+    }
+    await readAllRegisters();
+  }catch(err){ logLine('config load failed: '+err.message,'er'); }
+  e.target.value = '';
+};
+
+// ---- CSV export ------------------------------------------------------
+$('#btnExportCsv').onclick = ()=>{
+  const n = buf.count;
+  if (!n){ return; }
+  const rows = ['sample,led2_red,aled2,led1_ir,aled1,led2_minus_amb,led1_minus_amb,red_ac,ir_ac'];
+  for (let i=n-1;i>=0;i--)
+    rows.push([n-1-i, at(buf.red,i), at(buf.amb2,i), at(buf.ir,i), at(buf.amb1,i),
+               at(buf.redAmb,i), at(buf.irAmb,i),
+               at(buf.redAc,i).toFixed(2), at(buf.irAc,i).toFixed(2)].join(','));
+  const blob = new Blob([rows.join('\n')], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'afe4490_capture_'+Date.now()+'.csv'; a.click();
+};
+
+
+/* ==================================================================
+   6b. CAPTURE AND ANALYSE
+   ------------------------------------------------------------------
+   The same job the EVM's "ADC Capture & Analysis" page does: freeze a
+   finite block of samples and look at it properly, instead of watching
+   it scroll past. A capture is a static object, so the plots here are
+   drawn once and then left alone - they cost nothing per frame.
+
+   Two ways in. "Record" arms the acquisition and keeps the next N
+   samples, which is what the EVM's finite capture does and is the only
+   option if N is larger than the live ring. "Snapshot" copies the last
+   N samples already in the ring, which is instant but capped at the
+   4096 samples of history the monitor keeps. Live monitoring keeps
+   running throughout either one.
+   ================================================================== */
+const CAP_CH = [
+  { src:'red',    label:'LED2 (RED)',          cv:'--led2' },
+  { src:'amb2',   label:'LED2 (RED) ambient',  cv:'--amb'  },
+  { src:'ir',     label:'LED1 (IR)',           cv:'--led1' },
+  { src:'amb1',   label:'LED1 (IR) ambient',   cv:'--amb'  },
+  { src:'redAmb', label:'LED2 \u2212 ambient', cv:'--led2' },
+  { src:'irAmb',  label:'LED1 \u2212 ambient', cv:'--ppg'  },
+];
+const CAP_DOM = [
+  ['time',  'Time domain'],
+  ['fftlo', 'Spectrum \u00b7 0\u201310 Hz'],
+  ['fft',   'Spectrum \u00b7 full band'],
+  ['hist',  'Histogram'],
+];
+
+const cap = {
+  recording:false, want:0, got:0, n:0, rate:500, when:0,
+  ch:null, dirty:true, built:0,
+  /* The EVM's four-plot default, in its order: IR, IR ambient, RED,
+     RED ambient. Familiar to anyone coming from that software. */
+  plots:[ {ch:2,dom:'time'}, {ch:3,dom:'time'}, {ch:0,dom:'time'}, {ch:1,dom:'time'} ],
+};
+let capUnits = 'v', capDetrend = 'none', capWin = 'hann', capLayout = 4;
+
+function capAlloc(n){
+  cap.ch = [];
+  for (let k=0;k<CAP_CH.length;k++) cap.ch.push(new Float32Array(n));
+}
+
+function capAppend(led2, aled2, led1, aled1, led2a, led1a){
+  const i = cap.got;
+  cap.ch[0][i]=led2; cap.ch[1][i]=aled2; cap.ch[2][i]=led1;
+  cap.ch[3][i]=aled1; cap.ch[4][i]=led2a; cap.ch[5][i]=led1a;
+  cap.got = i+1;
+  if (cap.got >= cap.want) capFinish();
+  else if ((cap.got & 63) === 0) capProgress();
+}
+
+function capProgress(){
+  $('#capProg').style.width = (100*cap.got/Math.max(1,cap.want)).toFixed(1)+'%';
+  $('#capMeta').textContent = `${cap.got} / ${cap.want} samples`;
+}
+
+function capStart(){
+  const want = +$('#capN').value;
+  const mode = $('#capMode').value;
+  setView('capture');
+  cap.rate = stats.rate || 500;
+  cap.when = Date.now();
+
+  if (mode === 'snapshot'){
+    const n = Math.min(want, buf.count);
+    if (n < 8){ showBanner('info','Nothing to snapshot','No samples in the ring yet — press Start first.'); return; }
+    capAlloc(n); cap.want = n; cap.got = n;
+    // at(arr,0) is the newest, so walk backwards to keep time increasing.
+    for (let i=0;i<n;i++){
+      for (let k=0;k<CAP_CH.length;k++) cap.ch[k][i] = at(buf[CAP_CH[k].src], n-1-i);
+    }
+    capFinish();
+    return;
+  }
+
+  if (!streaming){ showBanner('info','Not streaming','Press Start before recording a capture.'); return; }
+  capAlloc(want);
+  cap.want = want; cap.got = 0; cap.recording = true;
+  $('#capState').textContent = 'recording'; $('#capState').className = 'capstat rec';
+  $('#capAbort').disabled = false;
+  $('#capGo').disabled = $('#capGo2').disabled = true;
+  $('#capCsv').disabled = $('#capPng').disabled = true;
+  capProgress();
+}
+
+function capAbort(){
+  if (!cap.recording) return;
+  cap.recording = false;
+  if (cap.got >= 8){ capFinish(); return; }
+  cap.n = 0;
+  $('#capState').textContent = 'aborted'; $('#capState').className = 'capstat';
+  $('#capAbort').disabled = true;
+  $('#capGo').disabled = $('#capGo2').disabled = false;
+}
+
+function capFinish(){
+  cap.recording = false;
+  cap.n = cap.got;
+  cap.dirty = true;
+  $('#capProg').style.width = '100%';
+  $('#capState').textContent = 'ready'; $('#capState').className = 'capstat done';
+  const secs = cap.n/Math.max(1,cap.rate);
+  $('#capMeta').textContent =
+    `${cap.n} samples \u00b7 ${secs.toFixed(3)} s @ ${cap.rate} Hz \u00b7 `
+    + new Date(cap.when).toLocaleTimeString();
+  $('#capAbort').disabled = true;
+  $('#capGo').disabled = $('#capGo2').disabled = false;
+  $('#capCsv').disabled = $('#capPng').disabled = false;
+  capTable();
+}
+
+/* ---- units and conditioning --------------------------------------- */
+function capScale(){
+  if (capUnits === 'code') return { k:1, unit:'', dp:0 };
+  if (capUnits === 'ua'){
+    const ag = regValues[0x21];
+    const rf = ag === undefined ? 0 : RF_OHMS[ag & 7];
+    const stg2 = (ag !== undefined && (ag & (1<<14))) ? STG2_LIN[(ag >> 8) & 7] : 1;
+    // The TIA is differential, so 1 V full scale is I = 1/(2*RF).
+    if (rf) return { k:(0.5/rf*1e6/stg2)/FS, unit:' \u00b5A', dp:4 };
+  }
+  return { k:1.2/FS, unit:' V', dp:6 };
+}
+
+function capSeries(i){
+  const p = cap.plots[i];
+  const raw = cap.ch[p.ch];
+  const n = cap.n;
+  const sc = capScale();
+  const out = new Float64Array(n);
+  for (let j=0;j<n;j++) out[j] = raw[j]*sc.k;
+  if (capDetrend === 'mean'){
+    let m = 0; for (let j=0;j<n;j++) m += out[j]; m /= n || 1;
+    for (let j=0;j<n;j++) out[j] -= m;
+  } else if (capDetrend === 'band'){
+    // Take the mean out first: otherwise the high-pass sees a step of half
+    // the ADC range at sample zero and rings for seconds afterwards.
+    let m0 = 0; for (let j=0;j<n;j++) m0 += out[j]; m0 /= n || 1;
+    for (let j=0;j<n;j++) out[j] -= m0;
+    const hp = designHP(0.5, cap.rate), lp = designLP(Math.min(5, cap.rate/4), cap.rate);
+    const sh = makeBiquad(), sl = makeBiquad();
+    // Run the cascade forwards then backwards: zero phase, and it kills
+    // the settling transient that would otherwise dominate the first
+    // second of a short capture.
+    const t = new Float64Array(n);
+    for (let j=0;j<n;j++) t[j] = step(lp, sl, step(hp, sh, out[j]));
+    sh.x1=sh.x2=sh.y1=sh.y2=0; sl.x1=sl.x2=sl.y1=sl.y2=0;
+    for (let j=n-1;j>=0;j--) out[j] = step(lp, sl, step(hp, sh, t[j]));
+  }
+  return { data:out, unit:sc.unit, dp:sc.dp };
+}
+
+function capNum(v, dp){
+  const a = Math.abs(v);
+  if (a !== 0 && (a < 1e-4 || a >= 1e6)) return v.toExponential(3);
+  return v.toFixed(dp);
+}
+
+function capStats(x){
+  const n = x.length;
+  let mn = Infinity, mx = -Infinity, sum = 0;
+  for (let i=0;i<n;i++){ const v = x[i]; if(v<mn)mn=v; if(v>mx)mx=v; sum += v; }
+  const mean = sum/n;
+  let ss = 0;
+  for (let i=0;i<n;i++){ const d = x[i]-mean; ss += d*d; }
+  const sd = Math.sqrt(ss/n);
+  return { n, mean, min:mn, max:mx, pp:mx-mn, sd };
+}
+
+const WINDOWS = {
+  rect: () => 1,
+  hann: (i,n) => 0.5 - 0.5*Math.cos(2*Math.PI*i/(n-1)),
+  blackman: (i,n) => {
+    const a = 2*Math.PI*i/(n-1);
+    return 0.35875 - 0.48829*Math.cos(a) + 0.14128*Math.cos(2*a) - 0.01168*Math.cos(3*a);
+  }
+};
+
+/* Windowed magnitude spectrum plus the numbers that go with it. */
+function capSpectrum(x, fs){
+  let M = 1;
+  while (M*2 <= Math.min(x.length, 16384)) M *= 2;
+  if (M < 64) return null;
+  const off = x.length - M;
+  const wf = WINDOWS[capWin] || WINDOWS.hann;
+  const re = new Float32Array(M), im = new Float32Array(M);
+  let mean = 0;
+  for (let i=0;i<M;i++) mean += x[off+i];
+  mean /= M;
+  let cg = 0;
+  for (let i=0;i<M;i++){ const w = wf(i,M); cg += w; re[i] = (x[off+i]-mean)*w; }
+  fft(re, im);
+  const bins = M>>1;
+  const mag = new Float32Array(bins);
+  const norm = 2/Math.max(1e-12, cg);
+  for (let i=0;i<bins;i++) mag[i] = Math.hypot(re[i], im[i])*norm;
+
+  // Fundamental: strongest bin above DC leakage.
+  let f0 = 0, pk = 0;
+  for (let i=3;i<bins;i++) if (mag[i] > pk){ pk = mag[i]; f0 = i; }
+  const pw = i => mag[i]*mag[i];
+  const near = (i, c, k=3) => Math.abs(i-c) <= k;
+  let sig = 0, noise = 0, thd = 0;
+  for (let i=3;i<bins;i++){
+    if (near(i, f0)) { sig += pw(i); continue; }
+    let harm = false;
+    for (let h=2; h<=6; h++) if (f0*h < bins && near(i, f0*h)) { thd += pw(i); harm = true; break; }
+    if (!harm) noise += pw(i);
+  }
+  const snr = noise > 0 && sig > 0 ? 10*Math.log10(sig/noise) : NaN;
+  return {
+    mag, bins, M, fs, df: fs/M,
+    f0hz: f0*fs/M,
+    snr, enob: isFinite(snr) ? (snr-1.76)/6.02 : NaN,
+    thd: (thd > 0 && sig > 0) ? 10*Math.log10(thd/sig) : NaN,
+    floorDb: 20*Math.log10(Math.sqrt(noise/Math.max(1,bins))/Math.max(1e-30,pk))
+  };
+}
+
+/* ---- the plot grid ------------------------------------------------- */
+function capBuildGrid(){
+  const host = $('#capGrid');
+  host.className = 'capgrid n'+capLayout;
+  host.replaceChildren();
+  while (cap.plots.length < capLayout) cap.plots.push({ ch:cap.plots.length % CAP_CH.length, dom:'time' });
+  for (let i=0;i<capLayout;i++){
+    const p = cap.plots[i];
+    const card = document.createElement('article');
+    card.className = 'card';
+    card.style.setProperty('--spine', 'var('+CAP_CH[p.ch].cv+')');
+    const chOpts = CAP_CH.map((c,k)=>`<option value="${k}"${k===p.ch?' selected':''}>${c.label}</option>`).join('');
+    const dmOpts = CAP_DOM.map(([v,l])=>`<option value="${v}"${v===p.dom?' selected':''}>${l}</option>`).join('');
+    card.innerHTML =
+      `<div class="card-hd">
+         <select class="capsel" data-i="${i}" data-k="ch">${chOpts}</select>
+         <select class="capsel" data-i="${i}" data-k="dom">${dmOpts}</select>
+         <div class="readout"><span id="capRo${i}">\u2014</span></div>
+       </div>
+       <div class="well"><canvas></canvas></div>
+       <div class="capstats" id="capSt${i}"></div>`;
+    host.appendChild(card);
+  }
+  host.querySelectorAll('.capsel').forEach(sel => {
+    sel.onchange = e => {
+      const i = +e.target.dataset.i;
+      cap.plots[i][e.target.dataset.k] = e.target.dataset.k === 'ch' ? +e.target.value : e.target.value;
+      e.target.closest('.card').style.setProperty('--spine', 'var('+CAP_CH[cap.plots[i].ch].cv+')');
+      cap.dirty = true;
+    };
+  });
+  cap.built = capLayout;
+  cap.dirty = true;
+}
+
+function capTick(now){
+  if (cap.recording) capProgress();
+  if (cap.built !== capLayout) capBuildGrid();
+  if (!cap.dirty && !sizeDirty) return;
+  cap.dirty = false;
+  const cvs = $$('#capGrid canvas');
+  for (let i=0;i<cvs.length;i++) capDrawPlot(i, cvs[i]);
+}
+
+function capDrawPlot(i, cv){
+  const {g,w,h} = fitCanvas(cv);
+  g.clearRect(0,0,w,h);
+  g.fillStyle = getCss('--void') || '#05070c'; g.fillRect(0,0,w,h);
+  const st = $('#capSt'+i), ro = $('#capRo'+i);
+  if (!cap.n){
+    grid(g,w,h,4,8);
+    drawEmpty(g,w,h,'no capture yet \u2014 press Capture');
+    if (st) st.textContent = ''; if (ro) ro.textContent = '\u2014';
+    return;
+  }
+  const p = cap.plots[i];
+  const colour = getCss(CAP_CH[p.ch].cv);
+  const S = capSeries(i);
+  if (p.dom === 'time')       capDrawTime(g,w,h,S,colour,st,ro);
+  else if (p.dom === 'fft')   capDrawFft(g,w,h,S,colour,st,ro,0);
+  else if (p.dom === 'fftlo') capDrawFft(g,w,h,S,colour,st,ro,10);
+  else                        capDrawHist(g,w,h,S,colour,st,ro);
+}
+
+function capAxisY(g,w,h,lo,hi,unit,dp){
+  g.font = '9px "JetBrains Mono", monospace';
+  g.fillStyle = 'rgba(107,127,148,.75)';
+  g.strokeStyle = 'rgba(146,176,210,.06)'; g.lineWidth = 1;
+  g.beginPath();
+  for (let k=0;k<=4;k++){
+    const y = 10 + (h-24)*k/4;
+    const v = hi - (hi-lo)*k/4;
+    if (k>0 && k<4){ const yy = Math.round(y)+.5; g.moveTo(46,yy); g.lineTo(w,yy); }
+    g.fillText(capNum(v,dp)+unit, 4, y+3);
+  }
+  g.stroke();
+}
+
+function capDrawTime(g,w,h,S,colour,st,ro){
+  const x = S.data, n = x.length, s = capStats(x);
+  const pad = (s.pp || 1)*0.08;
+  const lo = s.min-pad, hi = s.max+pad;
+  const x0 = 46, plotW = w-x0-6, top = 10, plotH = h-24;
+  capAxisY(g,w,h,lo,hi,S.unit,S.dp);
+
+  // time ruler
+  const secs = n/cap.rate;
+  const ticks = Math.min(10, Math.max(2, Math.round(secs)));
+  g.strokeStyle = 'rgba(146,176,210,.06)'; g.beginPath();
+  g.fillStyle = 'rgba(107,127,148,.6)';
+  for (let k=1;k<ticks;k++){
+    const px = Math.round(x0 + plotW*k/ticks)+.5;
+    g.moveTo(px, top); g.lineTo(px, top+plotH);
+    g.fillText((secs*k/ticks).toFixed(secs<5?2:1)+'s', px-11, h-3);
+  }
+  g.stroke();
+
+  const yOf = v => top + plotH - ((v-lo)/((hi-lo)||1))*plotH;
+  g.strokeStyle = colour; g.lineJoin = 'round'; g.lineCap = 'round';
+  const stepPx = n/plotW;
+  if (stepPx >= 2){
+    // min/max envelope, then the mean line on top
+    g.globalAlpha = .38; g.lineWidth = 1; g.lineCap = 'butt'; g.beginPath();
+    for (let px=0;px<plotW;px++){
+      const a = Math.floor(px*stepPx), b = Math.min(n, Math.floor((px+1)*stepPx));
+      let mn = Infinity, mx = -Infinity;
+      for (let j=a;j<b;j++){ const v = x[j]; if(v<mn)mn=v; if(v>mx)mx=v; }
+      if (mn === Infinity) continue;
+      g.moveTo(x0+px+.5, yOf(mx)); g.lineTo(x0+px+.5, yOf(mn));
+    }
+    g.stroke();
+    g.globalAlpha = 1; g.lineWidth = 1.2; g.lineCap = 'round'; g.beginPath();
+    for (let px=0;px<plotW;px++){
+      const a = Math.floor(px*stepPx), b = Math.min(n, Math.floor((px+1)*stepPx));
+      let sum = 0, c = 0;
+      for (let j=a;j<b;j++){ sum += x[j]; c++; }
+      if (!c) continue;
+      const y = yOf(sum/c);
+      if (px === 0) g.moveTo(x0+px, y); else g.lineTo(x0+px, y);
+    }
+    g.stroke();
+  } else {
+    g.lineWidth = 1.3; g.beginPath();
+    for (let j=0;j<n;j++){
+      const px = x0 + (j/(n-1))*plotW, y = yOf(x[j]);
+      if (j === 0) g.moveTo(px,y); else g.lineTo(px,y);
+    }
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+
+  if (ro) ro.textContent = `${n} pts \u00b7 ${(n/cap.rate).toFixed(3)} s`;
+  if (st) st.innerHTML =
+      `<span>mean <b>${capNum(s.mean,S.dp)}${S.unit}</b></span>`
+    + `<span>p-p <b>${capNum(s.pp,S.dp)}${S.unit}</b></span>`
+    + `<span>rms<sub>ac</sub> <b>${capNum(s.sd,S.dp)}${S.unit}</b></span>`
+    + `<span>min <b>${capNum(s.min,S.dp)}</b></span>`
+    + `<span>max <b>${capNum(s.max,S.dp)}</b></span>`;
+}
+
+function capDrawFft(g,w,h,S,colour,st,ro,maxHz){
+  const sp = capSpectrum(S.data, cap.rate);
+  if (!sp){ drawEmpty(g,w,h,'need at least 64 samples'); if(st) st.textContent=''; return; }
+  const x0 = 46, plotW = w-x0-6, top = 10, plotH = h-24;
+  const floor = -120;
+  /* SNR, THD and ENOB are always measured over the whole band - maxHz only
+     decides how much of it is drawn, and the 0 dB reference follows the
+     drawn range so a zoomed view is not squashed by an out-of-frame peak. */
+  const nyq = (maxHz && maxHz < cap.rate/2) ? maxHz : cap.rate/2;
+  const shown = Math.max(4, Math.min(sp.bins, Math.ceil(nyq*sp.M/cap.rate)));
+  let pk = 1e-30;
+  for (let i=1;i<shown;i++) if (sp.mag[i] > pk) pk = sp.mag[i];
+
+  g.font = '9px "JetBrains Mono", monospace';
+  g.fillStyle = 'rgba(107,127,148,.75)';
+  g.strokeStyle = 'rgba(146,176,210,.06)'; g.beginPath();
+  for (let k=0;k<=4;k++){
+    const y = top + plotH*k/4, db = floor*k/4;
+    if (k>0 && k<4){ const yy = Math.round(y)+.5; g.moveTo(x0,yy); g.lineTo(w,yy); }
+    g.fillText(db.toFixed(0)+' dB', 4, y+3);
+  }
+  g.stroke();
+
+  const ticks = 5;
+  g.strokeStyle = 'rgba(146,176,210,.06)'; g.beginPath();
+  g.fillStyle = 'rgba(107,127,148,.6)';
+  for (let k=1;k<ticks;k++){
+    const px = Math.round(x0+plotW*k/ticks)+.5;
+    g.moveTo(px, top); g.lineTo(px, top+plotH);
+    g.fillText((nyq*k/ticks).toFixed(nyq<20?1:0)+' Hz', px-15, h-3);
+  }
+  g.stroke();
+
+  /* A four-second capture only resolves 0.24 Hz, so a zoomed view has a few
+     dozen bins in it. Joining those with a line invents detail between them;
+     bars say plainly that each one is a measurement. */
+  const per = plotW/shown;
+  if (shown < 140){
+    g.fillStyle = colour; g.globalAlpha = .8;
+    for (let i=1;i<shown;i++){
+      const db = Math.max(floor, 20*Math.log10(Math.max(1e-30, sp.mag[i]/pk)));
+      const y = top + plotH*(db/floor);
+      g.fillRect(x0+i*per, y, Math.max(1, per-1.5), top+plotH-y);
+    }
+    g.globalAlpha = 1;
+  } else {
+    g.strokeStyle = colour; g.lineWidth = 1; g.globalAlpha = .9;
+    g.beginPath();
+    for (let i=1;i<shown;i++){
+      const db = Math.max(floor, 20*Math.log10(Math.max(1e-30, sp.mag[i]/pk)));
+      const y = top + plotH*(db/floor);
+      const px = x0 + i*per;
+      if (i === 1) g.moveTo(px,y); else g.lineTo(px,y);
+    }
+    g.stroke();
+    g.globalAlpha = 1;
+  }
+
+  // mark the fundamental
+  if (sp.f0hz <= nyq){
+    const fx = x0 + (sp.f0hz/nyq)*plotW;
+    g.strokeStyle = 'rgba(255,255,255,.28)'; g.setLineDash([3,3]);
+    g.beginPath(); g.moveTo(fx, top); g.lineTo(fx, top+plotH); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = 'rgba(255,255,255,.62)';
+    g.fillText('f\u2080', fx+3, top+9);
+  }
+
+  if (ro) ro.textContent =
+    `${sp.M}-pt \u00b7 ${sp.df.toFixed(3)} Hz/bin \u00b7 0\u2013${nyq.toFixed(nyq<20?0:0)} Hz`;
+  if (st) st.innerHTML =
+      `<span>f₀ <b>${sp.f0hz.toFixed(3)} Hz</b> (${(sp.f0hz*60).toFixed(0)} bpm)</span>`
+    + `<span>SNR <b>${isFinite(sp.snr)?sp.snr.toFixed(1):'—'} dB</b></span>`
+    + `<span>THD <b>${isFinite(sp.thd)?sp.thd.toFixed(1):'—'} dB</b></span>`
+    + `<span>ENOB <b>${isFinite(sp.enob)?sp.enob.toFixed(2):'—'} bit</b></span>`
+    + `<span>window <b>${capWin}</b></span>`;
+}
+
+function capDrawHist(g,w,h,S,colour,st,ro){
+  const x = S.data, n = x.length, s = capStats(x);
+  const B = 64, span = (s.max-s.min) || 1;
+  const bins = new Uint32Array(B);
+  for (let i=0;i<n;i++) bins[Math.min(B-1, Math.floor((x[i]-s.min)/span*B))]++;
+  let pk = 1;
+  for (let i=0;i<B;i++) if (bins[i] > pk) pk = bins[i];
+  const x0 = 46, plotW = w-x0-6, top = 10, plotH = h-24;
+
+  g.font = '9px "JetBrains Mono", monospace';
+  g.fillStyle = 'rgba(107,127,148,.75)';
+  for (let k=0;k<=4;k++) g.fillText(Math.round(pk*(1-k/4)).toString(), 4, top+plotH*k/4+3);
+  g.fillStyle = 'rgba(107,127,148,.6)';
+  g.fillText(capNum(s.min,S.dp)+S.unit, x0, h-3);
+  g.fillText(capNum(s.max,S.dp)+S.unit, w-72, h-3);
+
+  const bw = plotW/B;
+  g.fillStyle = colour; g.globalAlpha = .8;
+  for (let i=0;i<B;i++){
+    const bh = (bins[i]/pk)*plotH;
+    g.fillRect(x0+i*bw, top+plotH-bh, Math.max(1,bw-1), bh);
+  }
+  g.globalAlpha = 1;
+
+  // A normal reference fitted to the same mean and sigma: a converter's
+  // DC histogram should look like this, and a lumpy one does not.
+  g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = 1; g.beginPath();
+  const binW = span/B;
+  for (let i=0;i<B;i++){
+    const c = s.min + (i+0.5)*binW;
+    const p = Math.exp(-0.5*Math.pow((c-s.mean)/(s.sd||1e-12),2))/((s.sd||1e-12)*Math.sqrt(2*Math.PI));
+    const y = top + plotH - Math.min(plotH, (p*binW*n/pk)*plotH);
+    if (i === 0) g.moveTo(x0+i*bw+bw/2, y); else g.lineTo(x0+i*bw+bw/2, y);
+  }
+  g.stroke();
+
+  if (ro) ro.textContent = `${B} bins \u00b7 ${n} pts`;
+  if (st) st.innerHTML =
+      `<span>mean <b>${capNum(s.mean,S.dp)}${S.unit}</b></span>`
+    + `<span>σ <b>${capNum(s.sd,S.dp)}${S.unit}</b></span>`
+    + `<span>p-p <b>${capNum(s.pp,S.dp)}${S.unit}</b></span>`
+    + `<span>noise-free bits <b>${s.pp>0?Math.max(0,Math.log2(2*FS*(capUnits==='code'?1:1.2/FS)/s.pp)).toFixed(1):'—'}</b></span>`;
+}
+
+/* Full statistics for every channel, in the rail. */
+function capTable(){
+  const host = $('#capTable');
+  if (!cap.n){ host.textContent = 'Nothing captured yet.'; return; }
+  const sc = capScale();
+  const rows = CAP_CH.map((c,k) => {
+    const x = cap.ch[k], n = cap.n;
+    let mn = Infinity, mx = -Infinity, sum = 0;
+    for (let i=0;i<n;i++){ const v = x[i]*sc.k; if(v<mn)mn=v; if(v>mx)mx=v; sum += v; }
+    const mean = sum/n;
+    let ss = 0;
+    for (let i=0;i<n;i++){ const d = x[i]*sc.k-mean; ss += d*d; }
+    return `<tr><td style="color:var(${c.cv})">${c.label}</td>`
+         + `<td>${capNum(mean,sc.dp)}</td><td>${capNum(mx-mn,sc.dp)}</td>`
+         + `<td>${capNum(Math.sqrt(ss/n),sc.dp)}</td></tr>`;
+  }).join('');
+  host.innerHTML =
+    `<table style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:10px">
+       <tr style="color:var(--ink-4)"><th style="text-align:left">channel</th>
+         <th style="text-align:right">mean</th><th style="text-align:right">p-p</th>
+         <th style="text-align:right">rms<sub>ac</sub></th></tr>${rows}
+     </table>
+     <p class="hint" style="margin-top:6px">${cap.n} samples at ${cap.rate} Hz`
+     + `${sc.unit ? ', values in'+sc.unit : ', values in ADC codes'}.</p>`;
+}
+
+function capExportCsv(){
+  if (!cap.n) return;
+  const sc = capScale();
+  const head = '# AFE4490 capture  n=' + cap.n + '  fs=' + cap.rate + ' Hz  '
+             + new Date(cap.when).toISOString()
+             + '  units=' + (sc.unit.trim() || 'code') + '\n'
+             + 'sample,t_s,' + CAP_CH.map(c=>c.src).join(',') + '\n';
+  const parts = [head];
+  let chunk = [];
+  for (let i=0;i<cap.n;i++){
+    const cols = new Array(CAP_CH.length);
+    for (let k=0;k<CAP_CH.length;k++) cols[k] = (cap.ch[k][i]*sc.k).toPrecision(8);
+    chunk.push(i + ',' + (i/cap.rate).toFixed(6) + ',' + cols.join(','));
+    if (chunk.length >= 4096){ parts.push(chunk.join('\n')+'\n'); chunk = []; }
+  }
+  if (chunk.length) parts.push(chunk.join('\n')+'\n');
+  const url = URL.createObjectURL(new Blob(parts, {type:'text/csv'}));
+  const a = document.createElement('a');
+  a.href = url; a.download = 'afe4490_capture_' + new Date(cap.when).toISOString().replace(/[:.]/g,'-') + '.csv';
+  a.click(); setTimeout(()=>URL.revokeObjectURL(url), 4000);
+}
+
+function capExportPng(){
+  if (!cap.n) return;
+  const cvs = $$('#capGrid canvas');
+  if (!cvs.length) return;
+  const W = 1500, rowH = 300, pad = 12, headH = 42;
+  const out = document.createElement('canvas');
+  out.width = W; out.height = headH + cvs.length*(rowH+pad) + pad;
+  const g = out.getContext('2d');
+  g.fillStyle = '#06090f'; g.fillRect(0,0,out.width,out.height);
+  g.fillStyle = '#e8eef6'; g.font = 'bold 15px Inter, system-ui, sans-serif';
+  g.fillText('AFE4490 capture', pad, 24);
+  g.fillStyle = '#6b7f94'; g.font = '11px "JetBrains Mono", monospace';
+  g.fillText(`${cap.n} samples @ ${cap.rate} Hz  ${new Date(cap.when).toLocaleString()}`, pad, 38);
+  for (let i=0;i<cvs.length;i++){
+    const y = headH + i*(rowH+pad);
+    g.drawImage(cvs[i], pad, y, W-2*pad, rowH);
+    g.fillStyle = '#9fb2c6'; g.font = '600 11px Inter, system-ui, sans-serif';
+    g.fillText(CAP_CH[cap.plots[i].ch].label + '  \u00b7  '
+             + (CAP_DOM.find(d=>d[0]===cap.plots[i].dom)||['','?'])[1], pad+6, y+13);
+  }
+  out.toBlob(b => {
+    const url = URL.createObjectURL(b);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'afe4490_capture.png';
+    a.click(); setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  });
+}
+
+function setView(v){
+  if (viewMode === v) return;
+  viewMode = v;
+  document.body.classList.toggle('capture', v === 'capture');
+  $$('#viewSw button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  sizeDirty = true; cap.dirty = true;
+  if (v === 'monitor') for (const c of charts) c.full = true;
+}
+
+/* ==================================================================
+   7. WIRING
+   ================================================================== */
+let streaming = false;
+$('#btnConnect').onclick  = ()=> link.connected ? disconnect() : connect();
+$('#btnConnect2').onclick = connect;
+async function setStreaming(on){
+  if (on && !streaming){
+    resetBuffers();
+    await send('START', /^(ACK:START|ERR:)/);
+    streaming = true;
+    $('#btnStream').textContent = 'Stop'; $('#btnStream').classList.add('stop');
+  } else if (!on && streaming){
+    await send('STOP', /^(ACK:STOP|ERR:)/);
+    streaming = false;
+    $('#btnStream').textContent = 'Start'; $('#btnStream').classList.remove('stop');
+  }
+  refreshHealthBanner();
+}
+$('#btnStream').onclick = ()=> setStreaming(!streaming);
+
+function resetBuffers(){
+  buf.head = 0; buf.count = 0; buf.written = 0; dcInit = false;
+  resetPlayout();
+  for (const c of charts) c.reset();
+  [stHPr,stLPr,stHPi,stLPi].forEach(s=>{ s.x1=s.x2=s.y1=s.y2=0; });
+  buf.red.fill(0); buf.ir.fill(0); buf.amb2.fill(0); buf.amb1.fill(0);
+  buf.redAmb.fill(0); buf.irAmb.fill(0); buf.redAc.fill(0); buf.irAc.fill(0);
+}
+
+// ---- chart visibility, sweep, quality, orientation -------------------
+buildCharts();
+{
+  const host = $('#chartToggles');
+  for (const c of CHARTS){
+    const b = document.createElement('button');
+    b.className = 'chip'; b.id = 'tg' + c.id; b.textContent = c.label;
+    b.onclick = ()=>{ chartOn[c.id] = chartOn[c.id] ? 0 : 1; applyCharts(); };
+    host.appendChild(b);
+  }
+  applyCharts();
+}
+$('#selSweep').onchange   = e => { windowSec = +e.target.value; applySweep(); savePrefs(); };
+$('#selFps').onchange     = e => { fpsCap = +e.target.value; savePrefs(); };
+$('#selQuality').onchange = e => {
+  quality = e.target.value;
+  for (const c of charts) c.full = true;
+  savePrefs();
+};
+$('#selLanes').onchange   = e => {
+  laneMode = e.target.value;
+  for (const c of charts){ c.buildGroups(); c.layout(); }
+  savePrefs();
+};
+$('#ckInvert').onchange = e => {
+  invertPleth = e.target.checked;
+  for (const c of charts) c.setInvert(invertPleth);
+  savePrefs();
+};
+
+/* Settings that describe how the operator likes to look at the signal are
+   worth keeping; nothing about the device is stored here. */
+function savePrefs(){
+  try {
+    localStorage.setItem('afe4490.prefs', JSON.stringify(
+      { windowSec, fpsCap, quality, laneMode, invertPleth,
+        capLayout, capUnits, capDetrend, capWin }));
+  } catch(e){}
+}
+function loadPrefs(){
+  let p = null;
+  try { p = JSON.parse(localStorage.getItem('afe4490.prefs') || 'null'); } catch(e){}
+  if (!p) return;
+  if (p.windowSec) { windowSec = p.windowSec; $('#selSweep').value = p.windowSec; }
+  if (p.fpsCap !== undefined) { fpsCap = p.fpsCap; $('#selFps').value = p.fpsCap; }
+  if (p.quality) { quality = p.quality; $('#selQuality').value = p.quality; }
+  if (p.laneMode) { laneMode = p.laneMode; $('#selLanes').value = p.laneMode; }
+  if (p.invertPleth !== undefined) { invertPleth = p.invertPleth; $('#ckInvert').checked = p.invertPleth; }
+  if (p.capLayout) { capLayout = p.capLayout; $('#capLayout').value = p.capLayout; }
+  if (p.capUnits) { capUnits = p.capUnits; $('#capUnits').value = p.capUnits; }
+  if (p.capDetrend) { capDetrend = p.capDetrend; $('#capDetrend').value = p.capDetrend; }
+  if (p.capWin) { capWin = p.capWin; $('#capWin').value = p.capWin; }
+  for (const c of charts){ c.buildGroups(); c.setInvert(invertPleth); }
+}
+loadPrefs();
+
+/* Everything the operator can change about the display, back to how it
+   ships. Deliberately nothing to do with the device: the register map is
+   the AFE's business and has its own two buttons. */
+const VIEW_DEFAULTS = {
+  windowSec:5, fpsCap:0, quality:'high', laneMode:'split', invertPleth:true,
+  capLayout:4, capUnits:'v', capDetrend:'none', capWin:'hann',
+  charts:{ Pleth:1, Ac:1, Raw:1, Amb:0, Fft:1 }
+};
+$('#btnResetView').onclick = ()=>{
+  const d = VIEW_DEFAULTS;
+  windowSec = d.windowSec; fpsCap = d.fpsCap; quality = d.quality;
+  laneMode = d.laneMode; invertPleth = d.invertPleth;
+  capLayout = d.capLayout; capUnits = d.capUnits;
+  capDetrend = d.capDetrend; capWin = d.capWin;
+  chartOn = Object.assign({}, d.charts);
+
+  $('#selSweep').value = d.windowSec;   $('#selFps').value = d.fpsCap;
+  $('#selQuality').value = d.quality;   $('#selLanes').value = d.laneMode;
+  $('#ckInvert').checked = d.invertPleth;
+  $('#capLayout').value = d.capLayout;  $('#capUnits').value = d.capUnits;
+  $('#capDetrend').value = d.capDetrend; $('#capWin').value = d.capWin;
+
+  applyCharts();
+  for (const c of charts){ c.buildGroups(); c.setInvert(invertPleth); c.setSweep(windowSec); }
+  capBuildGrid(); capTable();
+  sizeDirty = true; cap.dirty = true;
+  savePrefs();
+  showBanner('info', 'Display reset',
+    'Sweep window, frame rate, trace quality, lane mode and the capture '
+    + 'settings are back to their defaults. The AFE’s registers were not touched.');
+  setTimeout(refreshHealthBanner, 2600);
+};
+
+// ---- capture --------------------------------------------------------
+$$('#viewSw button').forEach(b => b.onclick = ()=> setView(b.dataset.v));
+$('#capGo').onclick = $('#capGo2').onclick = capStart;
+$('#capAbort').onclick = capAbort;
+$('#capCsv').onclick = capExportCsv;
+$('#capPng').onclick = capExportPng;
+$('#capLayout').onchange  = e => { capLayout = +e.target.value; capBuildGrid(); savePrefs(); };
+$('#capUnits').onchange   = e => { capUnits = e.target.value; cap.dirty = true; capTable(); savePrefs(); };
+$('#capDetrend').onchange = e => { capDetrend = e.target.value; cap.dirty = true; savePrefs(); };
+$('#capWin').onchange     = e => { capWin = e.target.value; cap.dirty = true; savePrefs(); };
+$('#capN').onchange = e => {
+  $('#capSecs').textContent = (+e.target.value/Math.max(1,stats.rate)).toFixed(1)+' s';
+};
+capBuildGrid();
+
+// Re-measure only when something really changes shape.
+{
+  const ro = new ResizeObserver(()=>{ sizeDirty = true; lastFft = 0; cap.dirty = true; });
+  $$('canvas').forEach(c => ro.observe(c));
+  addEventListener('resize', ()=>{ sizeDirty = true; lastFft = 0; cap.dirty = true; });
+}
+
+$$('.tab').forEach(t => t.onclick = ()=>{
+  $$('.tab').forEach(x=>x.classList.remove('on'));
+  $$('.pane').forEach(x=>x.classList.remove('on'));
+  t.classList.add('on');
+  $(`.pane[data-p="${t.dataset.p}"]`).classList.add('on');
+  activeTab = t.dataset.p;
+  setView(t.dataset.p === 'cap' ? 'capture' : 'monitor');
+  sizeDirty = true;                   // the newly shown pane has never been measured
+  lastFft = 0;
+});
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === ' '){ e.preventDefault(); $('#btnStream').click(); }
+  if (e.key === '[' || e.key === ']'){
+    const sel = $('#selSweep'), d = e.key === ']' ? 1 : -1;
+    const n = Math.max(0, Math.min(sel.options.length-1, sel.selectedIndex + d));
+    if (n !== sel.selectedIndex){ sel.selectedIndex = n; windowSec = +sel.value; applySweep(); savePrefs(); }
+  }
+  if (e.key === 'c' || e.key === 'C'){ capStart(); }
+});
+
+if (!('serial' in navigator)){
+  $('#btnConnect').disabled = true; $('#btnConnect2').disabled = true;
+  $('#btnConnect2').textContent = 'Web Serial unavailable — use Chrome or Edge';
+}
+fill('#selRange', ['—','—','—','—']);
+renderRegTable();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
