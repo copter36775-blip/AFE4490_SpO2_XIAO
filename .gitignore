@@ -1,0 +1,28 @@
+# ---- build artifacts -------------------------------------------------
+.pio/
+*.pyc
+__pycache__/
+
+# ---- Office lock files ----------------------------------------------
+~$*.xlsx
+~$*.docx
+
+# ---- third-party redistributable ------------------------------------
+# TI's AFE44x0SPO2EVM GUI installer, 342 MB. It ships with the lab package,
+# it is TI's to distribute, and it is not part of this project. Download it
+# from ti.com if you need the vendor GUI.
+Processing/040313447_Lab7/AFE44x0SPO2EVM GUI v2_4/
+
+# ---- bulk sample logs -------------------------------------------------
+# 34 MB of EVM capture logs from the university lab. Trimmed fixtures of the
+# same formats live in Analysis/samples/ and are what the loader is tested
+# against; the full logs stay local.
+Processing/040313447_Lab7/Example/Log Data/
+
+# ---- generated analysis outputs --------------------------------------
+# Anything run_lab7.m or afe4490_excel.m writes. Regenerate by running them;
+# the inputs (samples/capture_demo_500Hz.*) are what is version controlled.
+Analysis/samples/demo_*
+Analysis/samples/*_Results.xlsx
+Analysis/samples/*_Manual_D4.csv
+Analysis/samples/*_Matlab_D5.csv
