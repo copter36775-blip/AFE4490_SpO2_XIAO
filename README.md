@@ -1107,6 +1107,40 @@ their ADC reset, and nothing exceeds `PRPCOUNT`.
 
 ---
 
+## 7b. Taking the data into MATLAB and Excel
+
+The university Lab 7 this project was built for uses TI's AFE44x0SPO2EVM and
+its LabVIEW GUI, then analyses the result in MATLAB and a fixed Excel workbook.
+**`Analysis/`** does the same analysis from a capture made with this console
+instead, and it does not change the method — only where the samples come from.
+
+```matlab
+S = afe4490_load('afe4490_capture_2026-10-28.json');
+A = afe4490_analyze(S);
+afe4490_report(S, A);
+afe4490_excel(A, 'Workbook', 'Analysis/excel/SpO2_Lab7_Template.xlsx');
+```
+
+The key fact that makes this work: TI's EVM logs and this project's captures
+carry **the same six channels in the same order on the same scale**. Every
+value in the lab's `Device_Volts` logs equals its `Device_Codes` value times
+exactly `1.2 / 2²¹` — checked across all six channels and both signs — which
+is the same conversion the console uses. So `afe4490_load` reads our CSV, our
+JSON, TI EVM `Device_Codes`/`Device_Volts` logs, and the lab's own `.mat` and
+two-column `.txt` files, and they all land in one place.
+
+Verified against TI's own software rather than against itself: the EVM GUI
+wrote its analysis into `Device_Analysis_*.csv`, whose Histogram block yields R
+with no peak detection at all. TI gets **95.50 %** on that recording and this
+toolkit gets **95.65 %** — 0.16 percentage points apart, from two independent
+implementations. Run `verify_toolkit` in `Analysis/matlab` to reproduce it.
+
+Full write-up, including the one failure mode that is silent (swapping RED and
+IR turns R into 1/R and still looks like a plausible saturation) in
+[`Analysis/README.md`](Analysis/README.md).
+
+---
+
 ## 8. Status
 
 - **Firmware** — builds clean, flashed and verified on hardware. All 47 commands
